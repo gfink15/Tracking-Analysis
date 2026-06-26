@@ -12,7 +12,7 @@ Why DuckDB?
   - Handles tens of GB on a laptop without breaking a sweat
 """
 from __future__ import annotations
-
+import sys
 import duckdb
 from contextlib import contextmanager
 from pathlib import Path
@@ -29,6 +29,8 @@ from config import (
     OPENWPM_TABLES,
 )
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_ROOT))
 
 def _configure(con: duckdb.DuckDBPyConnection) -> None:
     """Apply project-wide DuckDB settings to a fresh connection.
@@ -49,38 +51,34 @@ def get_connection(read_only: bool = False) -> duckdb.DuckDBPyConnection:
     """Return a configured DuckDB connection to the project database.
 
     Args:
-        read_only: If True, opens the DB in read-only mode. Use this
-            in analysis notebooks to prevent accidental writes that
-            could corrupt your analysis state.
-
-    Returns:
-        A DuckDB connection with project settings applied and all
-        Parquet files in PARQUET_DIR registered as views.
-
-    Why register Parquet as views?
-        It lets you write `SELECT * FROM http_requests` instead of
-        `SELECT * FROM 'artifacts/parquet/http_requests.parquet'`
-        in every query. Big readability win.
+        read_only: If True, opens the DB in read-only mode (recommended
+            for notebooks). Will auto-initialize the database file
+            via scripts/init_database.py if it doesn't yet exist.
     """
+    # Auto-initialize on first read-only access. This makes notebooks
+    # "just work" without forcing users to remember the init step.
+    if read_only and not DUCKDB_PATH.exists():
+        print(f"⚠  {DUCKDB_PATH.name} not found — auto-initializing...")
+        # Local import avoids circular dependency at module load.
+        import importlib.util
+        init_script = PROJECT_ROOT / "scripts" / "init_database.py"
+        spec = importlib.util.spec_from_file_location(
+            "init_database", init_script
+        )
+        module = importlib.util.module_from_spec(spec) # type: ignore
+        spec.loader.exec_module(module) # type: ignore
+        module.init_database()
+
     con = duckdb.connect(str(DUCKDB_PATH), read_only=read_only)
     _configure(con)
-    _register_parquet_views(con)
+    _register_parquet_views(con, read_only=read_only)   # pass the flag!
     return con
 
 
 @contextmanager
 def db_session(read_only: bool = False) -> Iterator[duckdb.DuckDBPyConnection]:
-    """Context manager version of get_connection().
-
-    Use this in scripts to guarantee the connection is closed even
-    if an exception occurs:
-
-        with db_session() as con:
-            df = con.execute("SELECT * FROM http_requests LIMIT 10").df()
-
-    In notebooks, get_connection() is often more convenient since you
-    want the connection to persist across cells.
-    """
+    """Context-manager version of get_connection() — see that function
+    for argument documentation."""
     con = get_connection(read_only=read_only)
     try:
         yield con
@@ -88,17 +86,44 @@ def db_session(read_only: bool = False) -> Iterator[duckdb.DuckDBPyConnection]:
         con.close()
 
 
-def _register_parquet_views(con: duckdb.DuckDBPyConnection) -> None:
+def _register_parquet_views(
+    con: duckdb.DuckDBPyConnection,
+    read_only: bool = False,
+) -> None:
     """Register each Parquet file in PARQUET_DIR as a queryable view.
 
-    A 'view' in DuckDB is just a named SELECT statement — it doesn't
-    materialize the data. So this is essentially free and lets queries
-    reference table names directly.
+    Behavior depends on connection mode:
+      • Write mode: runs CREATE OR REPLACE VIEW to (re)register every
+        Parquet file. This persists the view definitions into the
+        .duckdb file for future read-only connections.
+      • Read-only mode: skips registration entirely. The views are
+        assumed to already exist (persisted by a prior write-mode
+        connection, typically via scripts/init_database.py).
 
-    We use CREATE OR REPLACE so this is idempotent: running it multiple
-    times in the same connection won't error.
+    This split is what resolves the 'CREATE statement on read-only
+    database' error: the views are created ONCE in write mode and
+    then simply queried in read-only mode.
     """
-    for table in OPENWPM_TABLES + ['ads']:  # 'ads' added by enrich_ads.py
+    if read_only:
+        # Verify the expected views actually exist, fail fast if not.
+        existing = {
+            row[0] for row in con.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_type = 'VIEW'"
+            ).fetchall()
+        }
+        expected = set(OPENWPM_TABLES + ['ads'])
+        missing = expected - existing
+        if missing:
+            # Don't crash — some tables might legitimately be absent
+            # (e.g., 'ads' before you've run ad ingestion). Just warn.
+            print(f"⚠  Read-only connection: views not yet registered "
+                  f"for {sorted(missing)}.")
+            print(f"   Run: python scripts/init_database.py")
+        return
+
+    # Write mode: register/refresh all available views.
+    for table in OPENWPM_TABLES + ['ads']:
         parquet_path = PARQUET_DIR / f"{table}.parquet"
         if parquet_path.exists():
             con.execute(f"""

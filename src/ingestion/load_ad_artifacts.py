@@ -1,14 +1,14 @@
 """
 src/ingestion/load_ad_artifacts.py — Process ad scraping outputs into Parquet.
 
-Version 3.0 — aligned with ad_capture.py v3.1 output schema.
+Version 3.1 — aligned with ad_capture.py v3.1 output schema.
 
 Key features:
-  - Tiered detection metadata (high/medium confidence)
-  - Three-way network cross-verification (src regex × capture metadata × outerHTML)
-  - Disagreement logging for methodology audit trail
-  - Skips _visit_summary.json and _iframe_content.json (sidecar files)
-  - Schema version tracking for reproducibility
+    - Tiered detection metadata (high/medium confidence)
+    - Three-way network cross-verification (src regex × capture metadata × outerHTML)
+    - Disagreement logging for methodology audit trail
+    - Skips capture sidecars such as _visit_summary.json and _ad_content.json
+    - Schema version tracking for reproducibility
 """
 from __future__ import annotations
 
@@ -204,80 +204,156 @@ def _extract_ocr_text(png_path: Path) -> str:
 def _process_one_ad(
     json_path: Path,
     profile: str,
-    disagreements: list[dict],
-) -> Optional[ProcessedAd]:
-    """Process one ad's JSON + PNG. Returns None for skip cases.
+    disagreements: Optional[list[dict]] = None,
+) -> list[ProcessedAd]:
+    """Process one ad's JSON + PNG into ProcessedAd record(s).
 
-    `disagreements` is mutated to record cases where the regex-derived
-    network disagrees with the capture-time label — useful for auditing.
+    Compatible with ad_capture v3.1 schema. Handles three file types
+    that v3.1 writes into each visit directory:
+
+      • <ad_hash>.json        — actual ad record (dict). Processed.
+      • _visit_summary.json   — capture stats (dict). Skipped.
+      • _ad_content.json      — iframe content payload (often list). Skipped.
+
+    Also defensively handles legacy list-shaped payloads and other
+    unexpected structures without crashing.
     """
-    # Skip sidecar files
-    if json_path.name in SIDECAR_FILES:
-        return None
+    # ── Skip non-ad sidecar files by name ──
+    # These are v3.1 metadata/content files, not individual ad records.
+    if json_path.name.startswith("_"):
+        return []
 
+    # ── Read + parse JSON ──
     try:
-        meta = json.loads(json_path.read_text())
+        raw = json_path.read_text()
+        meta = json.loads(raw)
     except (json.JSONDecodeError, OSError) as e:
         print(f"  ⚠  Skipping malformed JSON {json_path}: {e}")
-        return None
+        return []
 
-    # Support potential record_type filtering (forward-compat)
-    if meta.get("record_type") not in (None, "ad"):
-        return None
+    # ── Handle double-encoded JSON (string-of-JSON) ──
+    # Defensive guard for any future schema quirks.
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except json.JSONDecodeError:
+            return []
 
-    ad_meta = meta.get('ad_metadata', {})
-    rect = ad_meta.get('rect', {})
-    src = ad_meta.get('src')
-    outer_html = ad_meta.get('outerHTML')
-    capture_network = ad_meta.get('network', 'unknown')
+    # ── Normalize to a list of dicts for uniform processing ──
+    # v3.1 writes single dicts, but we accept lists too for robustness
+    # against legacy data or future batch-write scenarios.
+    if isinstance(meta, dict):
+        records = [meta]
+    elif isinstance(meta, list):
+        records = [m for m in meta if isinstance(m, dict)]
+    else:
+        # Unknown shape — skip silently rather than crash.
+        return []
 
-    # ── Three-way network verification ──
-    final_network, verification_source, networks_agree = identify_ad_network(
-        src=src,
-        outer_html=outer_html,
-        meta_network=capture_network,
-    )
-
-    # Log disagreements for audit trail
-    if (not networks_agree
-            and capture_network not in ('unknown', 'none', '')):
-        disagreements.append({
-            'page_url': meta.get('page_url', ''),
-            'ad_hash': json_path.stem,
-            'src': src,
-            'capture_network': capture_network,
-            'regex_network': final_network,
-            'verification_source': verification_source,
-            'matched_selector': ad_meta.get('matched_selector', ''),
-        })
-
-    png_path = json_path.with_suffix('.png')
+    # ── Process each record ──
+    png_path = json_path.with_suffix(".png")
     ocr_text = _extract_ocr_text(png_path)
+    has_png = png_path.exists()
 
-    return ProcessedAd(
-        profile=profile,
-        visit_id=int(meta.get('visit_id', -1)),
-        page_url=meta.get('page_url', ''),
-        ad_hash=json_path.stem,
-        ad_src=src,
-        ad_tag=ad_meta.get('tag'),
-        ad_id=ad_meta.get('id'),
-        ad_width=float(rect.get('w', 0) or 0),
-        ad_height=float(rect.get('h', 0) or 0),
-        ad_x=float(rect.get('x', 0) or 0),
-        ad_y=float(rect.get('y', 0) or 0),
-        advertiser_network=final_network,
-        capture_network=capture_network,
-        verification_source=verification_source,
-        networks_agree=networks_agree,
-        confidence=ad_meta.get('confidence', 'unknown'),
-        matched_selector=ad_meta.get('matched_selector', ''),
-        schema_version=meta.get('schema_version', '3.1.0'),
-        ocr_text=ocr_text,
-        ocr_char_count=len(ocr_text),
-        has_screenshot=png_path.exists(),
-        timestamp=float(meta.get('timestamp', 0) or 0),
-    )
+    processed: list[ProcessedAd] = []
+    for i, rec in enumerate(records):
+        # Defense in depth: even after the list filter above, double-check.
+        if not isinstance(rec, dict):
+            continue
+
+        # Skip records that explicitly mark themselves as non-ad.
+        # v3.1 doesn't write this field, but future versions might.
+        if rec.get("record_type") not in (None, "ad"):
+            continue
+
+        # ── Extract nested ad_metadata ──
+        # In v3.1, ad fields live inside rec["ad_metadata"], NOT at top level.
+        ad_meta = rec.get("ad_metadata", {})
+        if not isinstance(ad_meta, dict):
+            ad_meta = {}
+
+        rect = ad_meta.get("rect") or rec.get("rect") or {}
+        if not isinstance(rect, dict):
+            rect = {}
+        src = ad_meta.get("src") or rec.get("src")
+        outer_html = (
+            ad_meta.get("outerHTML")
+            or ad_meta.get("outer_html")
+            or rec.get("outerHTML")
+            or rec.get("outer_html")
+        )
+
+        # ── Generate ad_hash from stem ──
+        # v3.1 derives ad_hash from md5(url + marker) at capture time
+        # and uses it as the FILENAME. So json_path.stem IS the ad_hash.
+        # For batch files (legacy), append index to disambiguate.
+        ad_hash = json_path.stem if len(records) == 1 \
+            else f"{json_path.stem}_{i}"
+
+        # ── Timestamp normalization ──
+        # v3.1 writes time.time() (float epoch seconds).
+        try:
+            timestamp = float(rec.get("timestamp") or 0.0)
+        except (TypeError, ValueError):
+            timestamp = 0.0
+
+        # ── Advertiser network ──
+        # Keep the capture-time label for provenance, but re-verify it
+        # against the src / outerHTML signals when they are available.
+        capture_network = (
+            ad_meta.get("network")
+            or rec.get("network")
+            or "unknown"
+        )
+        final_network, verification_source, networks_agree = identify_ad_network(
+            src,
+            outer_html=outer_html,
+            meta_network=capture_network,
+        )
+
+        if disagreements is not None and not networks_agree:
+            disagreements.append({
+                "profile": profile,
+                "visit_id": int(rec.get("visit_id", -1)),
+                "page_url": rec.get("page_url", ""),
+                "ad_hash": ad_hash,
+                "capture_network": capture_network,
+                "regex_network": final_network,
+                "verification_source": verification_source,
+                "matched_selector": ad_meta.get("matched_selector", ""),
+                "src": src,
+                "outer_html": outer_html,
+            })
+
+        ad_id = ad_meta.get("id") or rec.get("ad_id") or rec.get("id")
+
+        processed.append(ProcessedAd(
+            profile=profile,
+            visit_id=int(rec.get("visit_id", -1)),
+            page_url=rec.get("page_url", ""),
+            ad_hash=ad_hash,
+            ad_src=src,
+            ad_tag=ad_meta.get("tag"),
+            ad_id=ad_id,
+            ad_width=float(rect.get("w", 0) or 0),
+            ad_height=float(rect.get("h", 0) or 0),
+            ad_x=float(rect.get("x", 0) or 0),
+            ad_y=float(rect.get("y", 0) or 0),
+            advertiser_network=final_network,
+            capture_network=capture_network,
+            verification_source=verification_source,
+            networks_agree=networks_agree,
+            ocr_text=ocr_text,
+            ocr_char_count=len(ocr_text),
+            has_screenshot=has_png,
+            timestamp=timestamp,
+            # v3.1 fields — extract from ad_metadata
+            confidence=ad_meta.get("confidence", "unknown"),
+            matched_selector=ad_meta.get("matched_selector", ""),
+            schema_version="3.1",   # hardcoded — v3.1 doesn't write this itself
+        ))
+
+    return processed
 
 
 def load_ad_artifacts() -> None:
@@ -305,11 +381,11 @@ def load_ad_artifacts() -> None:
             if json_path.name in SIDECAR_FILES:
                 skipped_sidecars += 1
                 continue
-            ad = _process_one_ad(json_path, profile, all_disagreements)
-            if ad is None:
+            ads = _process_one_ad(json_path, profile, all_disagreements)
+            if not ads:
                 malformed += 1
             else:
-                all_ads.append(ad)
+                all_ads.extend(ads)
         added = len(all_ads) - before_count
         print(f"           → {added:,} ads ingested")
 

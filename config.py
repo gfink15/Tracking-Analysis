@@ -41,7 +41,7 @@ for d in (ARTIFACTS_DIR, PARQUET_DIR, FIGURES_DIR, REFERENCE_DIR):
 # The list of profiles is the backbone of every comparison we'll do.
 # Order matters for plot consistency — 'control' first as the baseline.
 PROFILES = [
-    # 'control', 
+    'control', 
     'shopping', 
     # 'news', 
     # 'health'

@@ -128,8 +128,11 @@ def cookie_lifespan_distribution(
                     -- Lifespan in days = (expiry - time_stamp) / 86400.
                     -- Session cookies have expiry IS NULL or = 0.
                     CASE
-                        WHEN c.expiry IS NULL OR c.expiry = 0 THEN -1
-                        ELSE (c.expiry - EXTRACT(EPOCH FROM c.time_stamp)) / 86400.0
+                        WHEN c.expiry IS NULL OR c.is_session = 1 THEN -1
+                        ELSE (
+                            EXTRACT(EPOCH FROM c.expiry)
+                            - EXTRACT(EPOCH FROM c.time_stamp)
+                        ) / 86400.0
                     END AS lifespan_days
                 FROM javascript_cookies c
                 JOIN site_visits v USING (profile, visit_id)
