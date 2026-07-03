@@ -79,6 +79,35 @@ def init_database() -> None:
         print(f"  ✓ {table:25s} ({n:>10,} rows)")
         registered += 1
 
+    # ─────────────────────────────────────────────────────────────
+    # VLM ad descriptions (from ad_desc.parquet)
+    # ─────────────────────────────────────────────────────────────
+    ad_desc_path = PARQUET_DIR / "ad_desc.parquet"
+    if ad_desc_path.exists():
+        con.execute(f"""
+            CREATE OR REPLACE VIEW ads_desc AS 
+            SELECT * FROM read_parquet('{ad_desc_path}')
+        """)
+        print(f"✓ Registered ads_desc view ({ad_desc_path.name})")
+    else:
+        print(f"⚠  {ad_desc_path.name} not found — skipping ads_desc registration")
+
+
+    con.execute(f"""
+        CREATE OR REPLACE VIEW ads_full AS
+        SELECT 
+            a.*,
+            d.is_valid_ad,
+            d.primary_product_or_service,
+            d.advertiser_brand,
+            d.visual_description,
+            d.text_content AS vlm_text,
+            d.confidence AS vlm_confidence
+        FROM read_parquet('{PARQUET_DIR}/ads.parquet') a
+        LEFT JOIN read_parquet('{PARQUET_DIR}/ad_desc.parquet') d
+        USING (ad_hash)
+    """)
+
     con.close()
     print("\n" + "─" * 60)
     print(f"✓ Initialized {DUCKDB_PATH}")

@@ -182,6 +182,7 @@ class ProcessedAd:
     ocr_char_count: int
     has_screenshot: bool
     timestamp: float
+    png_path: str = ""
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -351,6 +352,7 @@ def _process_one_ad(
             confidence=ad_meta.get("confidence", "unknown"),
             matched_selector=ad_meta.get("matched_selector", ""),
             schema_version="3.1",   # hardcoded — v3.1 doesn't write this itself
+            png_path=str(png_path.relative_to(DATA_DIR)) if png_path.exists() else "",
         ))
 
     return processed
