@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.figure import Figure
+import seaborn as sns
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -321,4 +322,71 @@ def plot_tracking_vs_ads_scatter(
     ax.legend()
     plt.tight_layout()
     _save_if_requested(fig, save_path)
+    return fig
+
+def plot_category_comparison(cat_df: pd.DataFrame, save_path=None):
+    """Grouped bar chart: % of ads in each category, by profile."""
+    df = cat_df[cat_df['ad_category'] != 'Unknown']
+    pct = (pd.crosstab(df['profile'], df['ad_category'], normalize='index') * 100)
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    pct.T.plot(kind='bar', ax=ax,
+               color=[PROFILE_COLORS.get(p, 'gray') for p in pct.index])
+    ax.set_ylabel('% of OCR-tagged ads')
+    ax.set_xlabel('Category')
+    ax.set_title('Ad Content Category Distribution by Profile', fontweight='bold')
+    ax.legend(title='Profile', labels=[PROFILE_LABELS.get(p, p) for p in pct.index])
+    plt.xticks(rotation=0)
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, bbox_inches='tight')
+    return fig
+
+
+def plot_differential_targeting(diff_matrix: pd.DataFrame, save_path=None):
+    """
+    Diverging heatmap: shopping% − control% per (network, category).
+    Red = network over-served category to shopping profile (retargeting evidence).
+    Blue = network suppressed category for shopping profile.
+    """
+    vmax = max(abs(diff_matrix.values.min()), abs(diff_matrix.values.max()))
+    fig, ax = plt.subplots(figsize=(11, 7))
+    sns.heatmap(diff_matrix, annot=True, fmt=".1f",
+                cmap="RdBu_r", center=0, vmin=-vmax, vmax=vmax,
+                cbar_kws={'label': 'Δ% (shopping − control)'},
+                linewidths=0.5, linecolor='white', ax=ax)
+    ax.set_title('Differential Targeting: Which Networks Shifted Their Content?',
+                 fontweight='bold', pad=15)
+    ax.set_xlabel('Content Category')
+    ax.set_ylabel('Ad Network')
+    plt.figtext(0.5, -0.02,
+                'Red cells = network served MORE of this category to shopping profile (retargeting evidence)',
+                ha='center', fontsize=9, style='italic')
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, bbox_inches='tight')
+    return fig
+
+
+def plot_network_specialization(cat_df: pd.DataFrame, top_networks: list, save_path=None):
+    """
+    Stacked bar of each network's category mix in shopping profile.
+    Networks dominated by one color = specialists; balanced = generalists.
+    """
+    sub = cat_df[(cat_df['profile'] == 'shopping') &
+                 (cat_df['advertiser_network'].isin(top_networks)) &
+                 (cat_df['ad_category'] != 'Unknown')]
+    mat = pd.crosstab(sub['advertiser_network'], sub['ad_category'], normalize='index') * 100
+    mat = mat.reindex(top_networks).dropna(how='all')
+    
+    fig, ax = plt.subplots(figsize=(11, 6))
+    mat.plot(kind='barh', stacked=True, ax=ax, colormap='tab10', width=0.7)
+    ax.set_xlabel('% of Network\'s Ads')
+    ax.set_ylabel('Ad Network')
+    ax.set_title('Network Specialization (Shopping Profile)', fontweight='bold')
+    ax.set_xlim(0, 100)
+    ax.legend(title='Category', bbox_to_anchor=(1.02, 1), loc='upper left')
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, bbox_inches='tight')
     return fig

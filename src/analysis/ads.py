@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+import numpy as np
+from src.utils.db import db_session
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -27,6 +29,20 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from config import PROFILES
 from src.utils.db import db_session
 
+
+# Keyword lexicon — tune as you discover new patterns in your data
+CATEGORY_KEYWORDS = {
+    'Retail':  ['shop', 'sale', 'buy', 'discount', 'shipping', 'cart', 
+                '% off', 'deal', 'order', 'checkout', 'free shipping'],
+    'Finance': ['credit', 'loan', 'invest', 'bank', 'insurance', 
+                'crypto', 'mortgage', 'refinance', 'apr'],
+    'Health':  ['doctor', 'health', 'medication', 'symptom', 'treatment', 
+                'wellness', 'therapy', 'prescription'],
+    'Travel':  ['flight', 'hotel', 'vacation', 'trip', 'resort', 
+                'book now', 'cruise', 'airline'],
+    'Tech':    ['software', 'app', 'cloud', 'ai', 'data', 'platform', 
+                'download', 'install'],
+}
 
 # ─────────────────────────────────────────────────────────────────────
 # AD VOLUME — the most basic comparison
@@ -379,6 +395,82 @@ def ads_per_visit_with_tracking() -> pd.DataFrame:
             LEFT JOIN cookie_counts c  USING (profile, visit_id)
             ORDER BY profile, visit_id
         """).df()
+    
+
+
+def _build_regex_case(col: str = 'lower(ocr_text)') -> str:
+    """Build a SQL CASE expression from CATEGORY_KEYWORDS."""
+    clauses = []
+    for cat, kws in CATEGORY_KEYWORDS.items():
+        pattern = '|'.join(kws)
+        clauses.append(f"WHEN regexp_matches({col}, '{pattern}') THEN '{cat}'")
+    return "CASE\n  " + "\n  ".join(clauses) + "\n  ELSE 'Unknown'\nEND"
+
+
+def categorize_ads_by_keywords(min_ocr_chars: int = 10,
+                               min_confidence: str = 'high') -> pd.DataFrame:
+    """
+    Returns one row per ad with columns:
+      profile, advertiser_network, ad_category, ocr_text, page_url
+    Ads with insufficient OCR text are tagged 'Unknown'.
+    """
+    case_sql = _build_regex_case()
+    with db_session(read_only=True) as con:
+        return con.execute(f"""
+            SELECT
+                profile,
+                advertiser_network,
+                page_url,
+                ocr_text,
+                ocr_char_count,
+                CASE 
+                    WHEN ocr_char_count < {min_ocr_chars} THEN 'Unknown'
+                    ELSE {case_sql}
+                END AS ad_category
+            FROM ads
+            WHERE confidence = '{min_confidence}'
+              AND advertiser_network IS NOT NULL
+              AND advertiser_network != 'unknown'
+        """).df()
+
+
+def network_category_matrix(cat_df: pd.DataFrame,
+                            profile: str,
+                            top_networks: list,
+                            normalize: str = 'row') -> pd.DataFrame:
+    """
+    Build a network × category matrix for one profile.
+    normalize: 'row' = % of each network's ads in each category
+               'col' = % of each category supplied by each network
+               None  = raw counts
+    """
+    sub = cat_df[(cat_df['profile'] == profile) &
+                 (cat_df['advertiser_network'].isin(top_networks)) &
+                 (cat_df['ad_category'] != 'Unknown')]
+    mat = pd.crosstab(sub['advertiser_network'], sub['ad_category'])
+    # Ensure all top networks appear even if 0 ads
+    mat = mat.reindex(top_networks, fill_value=0)
+    if normalize == 'row':
+        mat = mat.div(mat.sum(axis=1).replace(0, np.nan), axis=0) * 100
+    elif normalize == 'col':
+        mat = mat.div(mat.sum(axis=0).replace(0, np.nan), axis=1) * 100
+    return mat.fillna(0)
+
+
+def network_category_differential(cat_df: pd.DataFrame,
+                                  top_networks: list) -> pd.DataFrame:
+    """
+    For each (network, category): shopping_share% − control_share%.
+    Positive values = network served MORE of that category to the shopping profile.
+    This is the 'smoking gun' matrix for behavioral retargeting.
+    """
+    shopping = network_category_matrix(cat_df, 'shopping', top_networks, 'row')
+    control = network_category_matrix(cat_df, 'control', top_networks, 'row')
+    # Align indices/columns
+    all_cats = sorted(set(shopping.columns) | set(control.columns))
+    shopping = shopping.reindex(columns=all_cats, fill_value=0)
+    control = control.reindex(columns=all_cats, fill_value=0)
+    return shopping - control
 
 
 if __name__ == "__main__":
