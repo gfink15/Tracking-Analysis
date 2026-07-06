@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 import matplotlib.pyplot as plt
+
 import numpy as np
 import pandas as pd
 from matplotlib.figure import Figure
@@ -389,4 +390,108 @@ def plot_network_specialization(cat_df: pd.DataFrame, top_networks: list, save_p
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, bbox_inches='tight')
+    return fig
+
+def plot_category_heatmap(cat_matrix: pd.DataFrame,
+                          title: str = "VLM Ad Categories — % Share by Profile",
+                          figsize: tuple = (8, 9),
+                          cmap: str = "YlOrRd",
+                          save_path=None) -> Figure:
+    """Heatmap of category × profile % share.
+
+    Args:
+        cat_matrix: Output of ads.category_matrix() — rows=categories,
+                    cols=profiles, values=% share.
+        title: Figure title.
+        figsize: Figure dimensions.
+        cmap: Matplotlib colormap name.
+        save_path: Optional path to save the figure.
+
+    Returns:
+        The matplotlib Figure object.
+    """
+    fig, ax = plt.subplots(figsize=figsize)
+    sns.heatmap(
+        cat_matrix,
+        annot=True,
+        fmt=".1f",
+        cmap=cmap,
+        cbar_kws={'label': '% of profile ads'},
+        linewidths=0.5,
+        linecolor='white',
+        ax=ax,
+    )
+    ax.set_title(title, fontsize=13, pad=12)
+    ax.set_xlabel("Profile")
+    ax.set_ylabel("VLM Ad Category")
+    plt.setp(ax.get_xticklabels(), rotation=0)
+    plt.setp(ax.get_yticklabels(), rotation=0)
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, bbox_inches='tight')
+    return fig
+
+
+def plot_targeting_delta(delta_df: pd.DataFrame,
+                         title: str = "Category Targeting Delta\n"
+                                      "(shopping − control, percentage points)",
+                         figsize: tuple = (9, 8),
+                         save_path=None) -> Figure:
+    """Diverging horizontal bar chart for shopping-vs-control category deltas.
+
+    Positive bars = over-served to shopping profile.
+    Negative bars = over-served to control profile.
+
+    Args:
+        delta_df: Output of ads.targeting_delta() — index=category,
+                  single column of signed percentage-point differences.
+        title: Figure title.
+        figsize: Figure dimensions.
+        save_path: Optional path to save the figure.
+
+    Returns:
+        The matplotlib Figure object.
+    """
+    # Extract the single column (function returns a 1-col DataFrame)
+    if isinstance(delta_df, pd.DataFrame):
+        series = delta_df.iloc[:, 0]
+    else:
+        series = delta_df
+
+    series = series.sort_values()
+
+    # Color-code: positive = shopping over-served (blue), negative = control (red)
+    colors = ['#c0392b' if v < 0 else '#2c7fb8' for v in series.values]
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.barh(series.index, series.values, color=colors, edgecolor='black',
+            linewidth=0.6)
+
+    # Reference line at 0
+    ax.axvline(0, color='black', linewidth=0.8, linestyle='-')
+
+    # Annotate each bar with its numeric value
+    for i, v in enumerate(series.values):
+        offset = 0.15 if v >= 0 else -0.15
+        ha = 'left' if v >= 0 else 'right'
+        ax.text(v + offset, i, f"{v:+.1f}", va='center', ha=ha, fontsize=9)
+
+    ax.set_xlabel("Percentage-point difference (shopping − control)")
+    ax.set_ylabel("VLM Ad Category")
+    ax.set_title(title, fontsize=13, pad=12)
+
+    # Add subtle legend via annotations
+    xmax = max(abs(series.min()), abs(series.max())) * 1.25
+    ax.set_xlim(-xmax, xmax)
+    ax.text(xmax * 0.95, -0.8, "→ over-served to shopping",
+            ha='right', fontsize=8, style='italic', color='#2c7fb8')
+    ax.text(-xmax * 0.95, -0.8, "over-served to control ←",
+            ha='left', fontsize=8, style='italic', color='#c0392b')
+
+    ax.grid(axis='x', alpha=0.3)
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, bbox_inches='tight')
     return fig
