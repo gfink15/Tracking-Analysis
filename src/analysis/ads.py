@@ -1,17 +1,20 @@
 """
-src/analysis/ads.py — Quantitative analysis of captured ad content.
+src/analysis/ads.py — VLM-powered quantitative analysis of captured ads.
 
-While trackers and cookies tell us HOW users are profiled, ads tell us
-what that profiling produces. This module answers questions like:
-  - Do seeded profiles see more ads overall?
-  - Which advertiser networks dominate each profile?
-  - Are ads from certain networks (e.g., Criteo retargeting) more
-    prevalent in seeded vs. control profiles?
-  - Is ad TEXT content meaningfully different across profiles
-    (a precursor to topic modeling in topic_modeling.py)?
+This module replaces the keyword/OCR-based categorization with 
+Vision Language Model (VLM) output, providing four dimensions of analysis:
+
+  1. SOURCE   — Which ad networks serve which profiles?
+  2. CONTENT  — What categories/brands/products are being advertised?
+  3. LOCATION — Where on the page do ads appear (placement value)?
+  4. TRACKING — Do certain ad content types correlate with heavier tracking?
 
 All functions return pandas DataFrames composable with the statistical
 test infrastructure in src/analysis/statistics.py.
+
+Depends on the  ads_enriched
+` view defined in scripts/init_database.py,
+which LEFT JOINs ads.parquet (metadata) with ad_desc.parquet (VLM output).
 """
 from __future__ import annotations
 
@@ -21,7 +24,6 @@ from typing import Optional
 
 import pandas as pd
 import numpy as np
-from src.utils.db import db_session
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -30,132 +32,105 @@ from config import PROFILES
 from src.utils.db import db_session
 
 
-# Keyword lexicon — tune as you discover new patterns in your data
-CATEGORY_KEYWORDS = {
-    'Retail':  ['shop', 'sale', 'buy', 'discount', 'shipping', 'cart', 
-                '% off', 'deal', 'order', 'checkout', 'free shipping'],
-    'Finance': ['credit', 'loan', 'invest', 'bank', 'insurance', 
-                'crypto', 'mortgage', 'refinance', 'apr'],
-    'Health':  ['doctor', 'health', 'medication', 'symptom', 'treatment', 
-                'wellness', 'therapy', 'prescription'],
-    'Travel':  ['flight', 'hotel', 'vacation', 'trip', 'resort', 
-                'book now', 'cruise', 'airline'],
-    'Tech':    ['software', 'app', 'cloud', 'ai', 'data', 'platform', 
-                'download', 'install'],
+# ─────────────────────────────────────────────────────────────────────
+# CONFIDENCE FILTERING
+# ─────────────────────────────────────────────────────────────────────
+# VLM confidence is a float [0.0, 1.0]. Tune these thresholds based on
+# spot-checking your VLM outputs — 0.7 is a reasonable default for
+# "trust this for aggregate analysis."
+CONFIDENCE_THRESHOLDS = {
+    'low':    0.3,
+    'medium': 0.5,
+    'high':   0.7,
 }
 
-# ─────────────────────────────────────────────────────────────────────
-# AD VOLUME — the most basic comparison
-# ─────────────────────────────────────────────────────────────────────
-def ad_counts_by_profile(
-    min_confidence: Optional[str] = None,
-) -> pd.DataFrame:
-    """Per-profile ad counts and density.
 
-    Args:
-        min_confidence: Filter to 'high' confidence ads only, or None
-            for all. For paper-quality numbers, use 'high'. For
-            exploratory analysis, use None to see the full picture.
+def _confidence_clause(min_confidence: str = 'high') -> str:
+    """Build SQL WHERE clause for confidence filtering."""
+    threshold = CONFIDENCE_THRESHOLDS.get(min_confidence, 0.7)
+    return f"is_valid_ad = true AND confidence IN ('high', 'medium')"
 
-    Returns: profile, n_ads, n_visits_with_ads, n_total_visits,
-             ads_per_visit, pct_visits_with_ads.
+
+# ─────────────────────────────────────────────────────────────────────
+# COVERAGE / SANITY CHECKS
+# ─────────────────────────────────────────────────────────────────────
+def vlm_coverage_report() -> pd.DataFrame:
+    """Operational health check: how much of your ad corpus has been
+    successfully analyzed by the VLM, broken down by profile.
+    
+    Run this FIRST before any downstream analysis to catch pipeline gaps.
     """
-    confidence_filter = ""
-    if min_confidence == 'high':
-        confidence_filter = "AND a.confidence = 'high'"
-    elif min_confidence == 'medium':
-        confidence_filter = "AND a.confidence IN ('high', 'medium')"
-
     with db_session(read_only=True) as con:
-        df = con.execute(f"""
-            WITH ad_stats AS (
-                SELECT
-                    profile,
-                    COUNT(*)                       AS n_ads,
-                    COUNT(DISTINCT visit_id)       AS n_visits_with_ads
-                FROM ads a
-                WHERE 1=1 {confidence_filter}
-                GROUP BY profile
-            ),
-            visit_totals AS (
-                SELECT profile, COUNT(*) AS n_total_visits
-                FROM site_visits
-                GROUP BY profile
-            )
+        return con.execute("""
             SELECT
-                v.profile,
-                COALESCE(a.n_ads, 0)               AS n_ads,
-                COALESCE(a.n_visits_with_ads, 0)   AS n_visits_with_ads,
-                v.n_total_visits,
-                ROUND(COALESCE(a.n_ads, 0) * 1.0 /
-                      NULLIF(v.n_total_visits, 0), 2)  AS ads_per_visit,
-                ROUND(COALESCE(a.n_visits_with_ads, 0) * 100.0 /
-                      NULLIF(v.n_total_visits, 0), 1)  AS pct_visits_with_ads
-            FROM visit_totals v
-            LEFT JOIN ad_stats a USING (profile)
-            ORDER BY v.profile
+                profile,
+                COUNT(*) AS total_ads,
+                SUM(CASE WHEN is_valid_ad IS NULL THEN 1 ELSE 0 END) AS unprocessed,
+                SUM(CASE WHEN is_valid_ad = false THEN 1 ELSE 0 END) AS invalid_ads,
+                
+            FROM ads_enriched
+            
+            GROUP BY profile
+            ORDER BY profile
         """).df()
-    return df
 
 
-# ─────────────────────────────────────────────────────────────────────
-# ADVERTISER NETWORK DISTRIBUTION
-# ─────────────────────────────────────────────────────────────────────
-def network_distribution_by_profile(
-    min_confidence: Optional[str] = 'high',
-) -> pd.DataFrame:
-    """Distribution of advertiser networks per profile.
-
-    The "who's serving the ads" question. Differences here are
-    direct evidence of behavioral targeting: if 'shopping' sees
-    35% Criteo ads vs. 'control' at 5%, retargeting is working.
-
-    Returns long-format: profile, advertiser_network, n_ads, pct.
-    """
-    confidence_filter = ""
-    if min_confidence == 'high':
-        confidence_filter = "AND confidence = 'high'"
-
+def ad_counts_by_profile(min_confidence: str = 'high') -> pd.DataFrame:
+    """Total valid ads per profile (post-VLM filtering)."""
     with db_session(read_only=True) as con:
-        df = con.execute(f"""
+        return con.execute(f"""
+            SELECT profile, COUNT(*) AS n_ads
+            FROM ads_enriched
+            
+            WHERE {_confidence_clause(min_confidence)}
+            GROUP BY profile
+            ORDER BY n_ads DESC
+        """).df()
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 1. SOURCE ANALYSIS — Which networks serve which profiles?
+# ─────────────────────────────────────────────────────────────────────
+def network_distribution_by_profile(min_confidence: str = 'high') -> pd.DataFrame:
+    """Long-format: (profile, network, n_ads, pct_of_profile).
+    Ideal input for heatmaps and grouped bar charts.
+    """
+    with db_session(read_only=True) as con:
+        return con.execute(f"""
             WITH counts AS (
-                SELECT
-                    profile,
-                    advertiser_network,
+                SELECT 
+                    profile, 
+                    advertiser_network, 
                     COUNT(*) AS n_ads
-                FROM ads
-                WHERE 1=1 {confidence_filter}
+                FROM ads_enriched
+                
+                WHERE {_confidence_clause(min_confidence)}
+                  AND advertiser_network IS NOT NULL
+                  AND advertiser_network != 'unknown'
                 GROUP BY profile, advertiser_network
             ),
             totals AS (
-                SELECT profile, SUM(n_ads) AS total
+                SELECT profile, SUM(n_ads) AS profile_total
                 FROM counts
                 GROUP BY profile
             )
-            SELECT
+            SELECT 
                 c.profile,
                 c.advertiser_network,
                 c.n_ads,
-                ROUND(c.n_ads * 100.0 / NULLIF(t.total, 0), 2) AS pct
+                ROUND(100.0 * c.n_ads / t.profile_total, 2) AS pct
             FROM counts c
             JOIN totals t USING (profile)
             ORDER BY c.profile, c.n_ads DESC
         """).df()
-    return df
 
 
-def top_advertiser_networks(
-    top_n: int = 10,
-    min_confidence: Optional[str] = 'high',
-) -> pd.DataFrame:
-    """Top-N advertiser networks across all profiles, wide format.
-
-    Returns a DataFrame with one row per network and one column
-    per profile (% of that profile's ads served by this network).
-    Ideal for heatmap visualization.
+def top_advertiser_networks(top_n: int = 10, 
+                            min_confidence: str = 'high') -> pd.DataFrame:
+    """Wide-format pivot: rows=networks, cols=profiles, values=% share.
+    Perfect for heatmap visualization.
     """
     long = network_distribution_by_profile(min_confidence=min_confidence)
-    # Top networks by total volume across all profiles
     totals = long.groupby('advertiser_network')['n_ads'].sum()
     top_networks = totals.nlargest(top_n).index.tolist()
 
@@ -170,325 +145,320 @@ def top_advertiser_networks(
 
 
 # ─────────────────────────────────────────────────────────────────────
-# AD SIZE & POSITION — secondary signals
+# 2. CONTENT ANALYSIS — What is being advertised? (VLM-powered)
 # ─────────────────────────────────────────────────────────────────────
-def ad_size_distribution() -> pd.DataFrame:
-    """Distribution of ad dimensions per profile.
-
-    Standard IAB ad sizes (728×90 leaderboard, 300×250 medium
-    rectangle, 160×600 wide skyscraper, etc.) have different
-    auction values. A profile receiving more "premium" sizes is
-    being valued more highly by the ad ecosystem — a subtle but
-    measurable form of profiling intensity.
-
-    Returns: profile, size_bucket, n_ads.
+def category_distribution_by_profile(min_confidence: str = 'high',
+                                     top_n: int = 20) -> pd.DataFrame:
+    """VLM-identified ad category breakdown per profile.
+    
+    Replaces the old regex/keyword categorization — VLM categories
+    are semantically grounded rather than string-matched.
     """
     with db_session(read_only=True) as con:
-        return con.execute("""
+        return con.execute(f"""
+            WITH cat_counts AS (
+                SELECT 
+                    profile,
+                    LOWER(TRIM(category)) AS category,
+                    COUNT(*) AS n_ads
+                FROM ads_enriched
+                
+                WHERE {_confidence_clause(min_confidence)}
+                  AND category IS NOT NULL
+                  AND TRIM(category) != ''
+                GROUP BY profile, LOWER(TRIM(category))
+            ),
+            profile_totals AS (
+                SELECT profile, SUM(n_ads) AS total FROM cat_counts GROUP BY profile
+            )
+            SELECT 
+                c.profile,
+                c.category,
+                c.n_ads,
+                ROUND(100.0 * c.n_ads / p.total, 2) AS pct_of_profile
+            FROM cat_counts c
+            JOIN profile_totals p USING (profile)
+            ORDER BY c.profile, c.n_ads DESC
+            LIMIT {top_n * len(PROFILES)}
+        """).df()
+
+
+def top_brands_by_profile(top_n: int = 15,
+                          min_confidence: str = 'high') -> pd.DataFrame:
+    """Which brands appear most frequently in each profile's ad stream?
+    
+    This is the strongest signal for behavioral retargeting — if the
+    'shopping' profile sees Nike ads 10x more than 'control', that's
+    a direct evidence of profile-based targeting.
+    """
+    with db_session(read_only=True) as con:
+        return con.execute(f"""
+            SELECT 
+                profile,
+                LOWER(TRIM(brand)) AS brand,
+                COUNT(*) AS n_ads,
+                COUNT(DISTINCT advertiser_network) AS n_networks,
+                ROUND(AVG(confidence), 3) AS avg_confidence
+            FROM ads_enriched
+            
+            WHERE {_confidence_clause(min_confidence)}
+              AND brand IS NOT NULL
+              AND TRIM(brand) != ''
+            GROUP BY profile, LOWER(TRIM(brand))
+            HAVING n_ads >= 2
+            ORDER BY profile, n_ads DESC
+        """).df()
+
+
+def top_products_by_profile(top_n: int = 15,
+                            min_confidence: str = 'high') -> pd.DataFrame:
+    """Product-level granularity — finer than category, coarser than description."""
+    with db_session(read_only=True) as con:
+        return con.execute(f"""
+            SELECT 
+                profile,
+                LOWER(TRIM(product)) AS product,
+                COUNT(*) AS n_ads
+            FROM ads_enriched
+            
+            WHERE {_confidence_clause(min_confidence)}
+              AND product IS NOT NULL
+              AND TRIM(product) != ''
+            GROUP BY profile, LOWER(TRIM(product))
+            HAVING n_ads >= 2
+            ORDER BY profile, n_ads DESC
+        """).df()
+
+
+def category_matrix(min_confidence: str = 'high',
+                    top_n: int = 15) -> pd.DataFrame:
+    """Wide pivot: rows=categories, cols=profiles, values=% share.
+    Drop-in replacement for the old keyword-based network_category_matrix.
+    """
+    long = category_distribution_by_profile(min_confidence=min_confidence,
+                                            top_n=top_n * 5)
+    totals = long.groupby('category')['n_ads'].sum()
+    top_cats = totals.nlargest(top_n).index.tolist()
+
+    pivot = (long[long['category'].isin(top_cats)]
+             .pivot(index='category',
+                    columns='profile',
+                    values='pct_of_profile')
+             .reindex(columns=PROFILES)
+             .reindex(index=top_cats)
+             .fillna(0))
+    return pivot
+
+
+def targeting_delta(min_confidence: str = 'high',
+                    top_n: int = 15) -> pd.DataFrame:
+    """The 'smoking gun' matrix: shopping_pct − control_pct per category.
+    
+    Positive values = category served MORE to shopping profile
+    Negative values = category served MORE to control profile
+    """
+    matrix = category_matrix(min_confidence=min_confidence, top_n=top_n)
+    if 'shopping' not in matrix.columns or 'control' not in matrix.columns:
+        raise ValueError("Requires both 'shopping' and 'control' profiles.")
+    
+    delta = (matrix['shopping'] - matrix['control']).sort_values(ascending=False)
+    return delta.to_frame(name='shopping_minus_control_pct')
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 3. LOCATION ANALYSIS — Where do ads appear on the page?
+# ─────────────────────────────────────────────────────────────────────
+def ad_placement_stats(min_confidence: str = 'high') -> pd.DataFrame:
+    """Per-profile ad placement statistics.
+    
+    Ads served 'above the fold' (low ad_y) to specific profiles indicate
+    that the ad ecosystem values those profiles more highly.
+    """
+    with db_session(read_only=True) as con:
+        return con.execute(f"""
+            SELECT 
+                profile,
+                COUNT(*) AS n_ads,
+                ROUND(AVG(ad_x), 1) AS avg_x,
+                ROUND(AVG(ad_y), 1) AS avg_y,
+                ROUND(AVG(ad_width), 1) AS avg_width,
+                ROUND(AVG(ad_height), 1) AS avg_height,
+                ROUND(AVG(ad_width * ad_height), 1) AS avg_area,
+                SUM(CASE WHEN ad_y < 600 THEN 1 ELSE 0 END) AS above_fold_count,
+                ROUND(100.0 * SUM(CASE WHEN ad_y < 600 THEN 1 ELSE 0 END) 
+                      / COUNT(*), 2) AS pct_above_fold
+            FROM ads_enriched
+            
+            WHERE {_confidence_clause(min_confidence)}
+            GROUP BY profile
+            ORDER BY profile
+        """).df()
+
+
+def iab_size_classification(min_confidence: str = 'high') -> pd.DataFrame:
+    """Classifies ads into standard IAB sizes and reports distribution.
+    
+    Premium sizes (leaderboard, medium rectangle) command higher CPMs.
+    A profile receiving more premium sizes is being valued more.
+    """
+    with db_session(read_only=True) as con:
+        return con.execute(f"""
             SELECT
                 profile,
                 CASE
-                    WHEN ad_width = 728 AND ad_height = 90    THEN '728x90 leaderboard'
-                    WHEN ad_width = 300 AND ad_height = 250   THEN '300x250 medium rect'
-                    WHEN ad_width = 160 AND ad_height = 600   THEN '160x600 skyscraper'
-                    WHEN ad_width = 300 AND ad_height = 600   THEN '300x600 half-page'
-                    WHEN ad_width = 970 AND ad_height = 250   THEN '970x250 billboard'
-                    WHEN ad_width = 320 AND ad_height = 50    THEN '320x50 mobile banner'
-                    WHEN ad_width * ad_height < 10000         THEN 'tiny (<100x100)'
-                    WHEN ad_width * ad_height > 250000        THEN 'large (>500x500)'
-                    ELSE 'non-standard'
-                END AS size_bucket,
+                    WHEN ad_width BETWEEN 720 AND 740 AND ad_height BETWEEN 85 AND 95 
+                        THEN '728x90 Leaderboard'
+                    WHEN ad_width BETWEEN 295 AND 305 AND ad_height BETWEEN 245 AND 255 
+                        THEN '300x250 Medium Rectangle'
+                    WHEN ad_width BETWEEN 155 AND 165 AND ad_height BETWEEN 595 AND 605 
+                        THEN '160x600 Wide Skyscraper'
+                    WHEN ad_width BETWEEN 315 AND 325 AND ad_height BETWEEN 45 AND 55 
+                        THEN '320x50 Mobile Banner'
+                    WHEN ad_width BETWEEN 965 AND 975 AND ad_height BETWEEN 245 AND 255 
+                        THEN '970x250 Billboard'
+                    ELSE 'Non-standard'
+                END AS iab_size,
                 COUNT(*) AS n_ads
-            FROM ads
-            WHERE confidence = 'high'
-            GROUP BY profile, size_bucket
+            FROM ads_enriched
+            
+            WHERE {_confidence_clause(min_confidence)}
+              AND ad_width > 0 AND ad_height > 0
+            GROUP BY profile, iab_size
             ORDER BY profile, n_ads DESC
         """).df()
 
 
 # ─────────────────────────────────────────────────────────────────────
-# OCR TEXT ANALYSIS
+# 4. TRACKING NETWORK ANALYSIS — Does content correlate with tracking?
 # ─────────────────────────────────────────────────────────────────────
-def ocr_text_stats() -> pd.DataFrame:
-    """Summary statistics on OCR text extracted from ad screenshots.
-
-    Per-profile: how many ads had extractable text, average text
-    length, and whether profiles differ in textual ad density.
-
-    A profile receiving more text-heavy ads (vs. pure-image ads)
-    suggests different ad categories — text-heavy is often
-    direct-response/retail; image-heavy is often brand advertising.
-    """
-    with db_session(read_only=True) as con:
-        return con.execute("""
-            SELECT
-                profile,
-                COUNT(*)                            AS n_ads_total,
-                SUM(CASE WHEN ocr_char_count > 0
-                    THEN 1 ELSE 0 END)              AS n_ads_with_text,
-                ROUND(AVG(ocr_char_count), 1)       AS avg_ocr_chars,
-                ROUND(stddev(ocr_char_count), 1)    AS stddev_ocr_chars,
-                MAX(ocr_char_count)                 AS max_ocr_chars,
-                ROUND(100.0 *
-                    SUM(CASE WHEN ocr_char_count > 0
-                        THEN 1 ELSE 0 END) /
-                    NULLIF(COUNT(*), 0), 1)         AS pct_with_text
-            FROM ads
-            WHERE confidence = 'high'
-            GROUP BY profile
-            ORDER BY profile
-        """).df()
-
-
-# ─────────────────────────────────────────────────────────────────────
-# KEYWORD SEARCH IN OCR TEXT
-# ─────────────────────────────────────────────────────────────────────
-# Hand-curated keyword categories. Used for quick smoke-testing of
-# whether seeding produces detectable content shifts BEFORE running
-# the full topic-modeling pipeline.
-KEYWORD_CATEGORIES = {
-    'retail':   ['shop', 'sale', 'buy now', 'discount', 'free shipping',
-                 'cart', 'order', '% off', 'deal'],
-    'finance':  ['credit', 'loan', 'mortgage', 'investment', 'bank',
-                 'insurance', 'apr', 'savings', 'crypto'],
-    'health':   ['doctor', 'medication', 'health', 'symptoms', 'treatment',
-                 'prescription', 'pharmacy', 'wellness', 'therapy'],
-    'travel':   ['flight', 'hotel', 'vacation', 'book now', 'trip',
-                 'destination', 'cruise', 'resort'],
-    'auto':     ['car', 'vehicle', 'lease', 'dealer', 'suv', 'truck',
-                 'mpg', 'financing'],
-    'tech':     ['software', 'app', 'download', 'subscribe', 'cloud',
-                 'ai', 'free trial', 'platform'],
-    'media':    ['stream', 'watch now', 'episode', 'season', 'movie',
-                 'series', 'podcast', 'channel'],
-    'food':     ['recipe', 'restaurant', 'delivery', 'meal', 'order food',
-                 'menu', 'dining'],
-}
-
-
-def keyword_category_counts() -> pd.DataFrame:
-    """Count ads matching each keyword category, per profile.
-
-    A first-pass content analysis: for each (profile, category) pair,
-    count how many ads contain ANY keyword from the category in their
-    OCR text. Cheap, interpretable, and useful as a sanity check
-    before investing in topic modeling.
-
-    Returns long-format: profile, category, n_matching_ads, pct_of_ads.
-
-    Note: An ad can match multiple categories — these are not mutually
-    exclusive. The percentages will sum to >100% for that reason,
-    which is expected and worth documenting in your methodology.
-    """
-    # Build a CASE expression per category. SQL has no native
-    # "contains any of these substrings" operator, so we OR-chain
-    # ILIKE patterns. ILIKE is case-insensitive in DuckDB.
-    category_cases = []
-    for category, keywords in KEYWORD_CATEGORIES.items():
-        clauses = " OR ".join(
-            f"ocr_text ILIKE '%{kw}%'" for kw in keywords
-        )
-        category_cases.append(
-            f"SUM(CASE WHEN ({clauses}) THEN 1 ELSE 0 END) AS n_{category}"
-        )
-
-    case_sql = ",\n                ".join(category_cases)
-
-    with db_session(read_only=True) as con:
-        wide = con.execute(f"""
-            SELECT
-                profile,
-                COUNT(*) AS n_ads_with_text,
-                {case_sql}
-            FROM ads
-            WHERE confidence = 'high' AND ocr_char_count > 0
-            GROUP BY profile
-            ORDER BY profile
-        """).df()
-
-    # Melt to long format for easier plotting/analysis.
-    category_cols = [f"n_{c}" for c in KEYWORD_CATEGORIES]
-    long = wide.melt(
-        id_vars=['profile', 'n_ads_with_text'],
-        value_vars=category_cols,
-        var_name='category',
-        value_name='n_matching_ads',
-    )
-    long['category'] = long['category'].str.replace('n_', '', regex=False)
-    long['pct_of_ads'] = (
-        long['n_matching_ads'] * 100.0 / long['n_ads_with_text']
-    ).round(2)
-    return long[['profile', 'category', 'n_matching_ads', 'pct_of_ads']]
-
-
-def differential_keyword_categories(
-    profile_a: str,
-    profile_b: str = 'control',
-) -> pd.DataFrame:
-    """Categories where profile_a's ads differ most from profile_b's.
-
-    Returns a sorted DataFrame: category, pct_a, pct_b, pct_delta,
-    pct_lift. The single most useful "is targeting working?" table
-    you'll generate before topic modeling.
-    """
-    long = keyword_category_counts()
-    pivot = long.pivot(
-        index='category', columns='profile', values='pct_of_ads'
-    ).fillna(0)
-
-    if profile_a not in pivot.columns or profile_b not in pivot.columns:
-        raise ValueError(
-            f"Need both '{profile_a}' and '{profile_b}' in data"
-        )
-
-    df = pd.DataFrame({
-        'category': pivot.index,
-        'pct_a':    pivot[profile_a].values,
-        'pct_b':    pivot[profile_b].values,
-    })
-    df['pct_delta'] = df['pct_a'] - df['pct_b']
-    df['pct_lift']  = (df['pct_a'] + 0.1) / (df['pct_b'] + 0.1)
-    return df.sort_values('pct_lift', ascending=False).reset_index(drop=True)
-
-
-# ─────────────────────────────────────────────────────────────────────
-# AD ↔ TRACKING CORRELATION
-# ─────────────────────────────────────────────────────────────────────
-def ads_per_visit_with_tracking() -> pd.DataFrame:
-    """Joins ad counts and tracker counts at the visit level.
-
-    Output suitable for scatter plots ("does heavier tracking lead to
-    more ads?") and correlation analysis. One row per (profile, visit).
-
-    Returns: profile, visit_id, n_trackers, n_ads, n_cookies.
-    """
-    with db_session(read_only=True) as con:
-        return con.execute("""
-            WITH tracker_counts AS (
-                SELECT profile, visit_id,
-                       COUNT(DISTINCT regexp_extract(url, '://([^/]+)', 1))
-                           AS n_trackers
-                FROM http_requests
-                WHERE url LIKE 'http%'
-                GROUP BY profile, visit_id
-            ),
-            ad_counts AS (
-                SELECT profile, visit_id, COUNT(*) AS n_ads
-                FROM ads
-                WHERE confidence = 'high'
-                GROUP BY profile, visit_id
-            ),
-            cookie_counts AS (
-                SELECT profile, visit_id, COUNT(*) AS n_cookies
-                FROM javascript_cookies
-                GROUP BY profile, visit_id
-            )
-            SELECT
-                v.profile,
-                v.visit_id,
-                COALESCE(t.n_trackers, 0) AS n_trackers,
-                COALESCE(a.n_ads, 0)      AS n_ads,
-                COALESCE(c.n_cookies, 0)  AS n_cookies
-            FROM site_visits v
-            LEFT JOIN tracker_counts t USING (profile, visit_id)
-            LEFT JOIN ad_counts a      USING (profile, visit_id)
-            LEFT JOIN cookie_counts c  USING (profile, visit_id)
-            ORDER BY profile, visit_id
-        """).df()
+def tracking_intensity_by_category(min_confidence: str = 'high') -> pd.DataFrame:
+    """Do certain VLM ad categories correlate with heavier tracker presence?
     
-
-
-def _build_regex_case(col: str = 'lower(ocr_text)') -> str:
-    """Build a SQL CASE expression from CATEGORY_KEYWORDS."""
-    clauses = []
-    for cat, kws in CATEGORY_KEYWORDS.items():
-        pattern = '|'.join(kws)
-        clauses.append(f"WHEN regexp_matches({col}, '{pattern}') THEN '{cat}'")
-    return "CASE\n  " + "\n  ".join(clauses) + "\n  ELSE 'Unknown'\nEND"
-
-
-def categorize_ads_by_keywords(min_ocr_chars: int = 10,
-                               min_confidence: str = 'high') -> pd.DataFrame:
+    E.g., are 'Financial Services' ads accompanied by more third-party
+    requests than 'Entertainment' ads?
     """
-    Returns one row per ad with columns:
-      profile, advertiser_network, ad_category, ocr_text, page_url
-    Ads with insufficient OCR text are tagged 'Unknown'.
-    """
-    case_sql = _build_regex_case()
     with db_session(read_only=True) as con:
         return con.execute(f"""
-            SELECT
-                profile,
-                advertiser_network,
-                page_url,
-                ocr_text,
-                ocr_char_count,
-                CASE 
-                    WHEN ocr_char_count < {min_ocr_chars} THEN 'Unknown'
-                    ELSE {case_sql}
-                END AS ad_category
-            FROM ads
-            WHERE confidence = '{min_confidence}'
-              AND advertiser_network IS NOT NULL
-              AND advertiser_network != 'unknown'
+            WITH tracker_counts AS (
+                SELECT 
+                    visit_id, 
+                    COUNT(DISTINCT url) AS n_trackers
+                FROM http_requests
+                WHERE is_tracker = true
+                GROUP BY visit_id
+            )
+            SELECT 
+                ae.profile,
+                LOWER(TRIM(ae.category)) AS category,
+                COUNT(DISTINCT ae.ad_hash) AS n_ads,
+                ROUND(AVG(tc.n_trackers), 1) AS avg_trackers_on_page,
+                ROUND(STDDEV(tc.n_trackers), 1) AS stddev_trackers
+            FROM ads_enriched
+             ae
+            LEFT JOIN tracker_counts tc USING (visit_id)
+            WHERE {_confidence_clause('high').replace('is_valid_ad', 'ae.is_valid_ad').replace('confidence', 'ae.confidence')}
+              AND ae.category IS NOT NULL
+            GROUP BY ae.profile, LOWER(TRIM(ae.category))
+            HAVING n_ads >= 3
+            ORDER BY avg_trackers_on_page DESC
         """).df()
 
 
-def network_category_matrix(cat_df: pd.DataFrame,
-                            profile: str,
-                            top_networks: list,
-                            normalize: str = 'row') -> pd.DataFrame:
+def tracker_network_cooccurrence(min_confidence: str = 'high',
+                                 top_n: int = 20) -> pd.DataFrame:
+    """Which tracker domains co-occur with which ad networks?
+    
+    This exposes the ad-tech supply chain: e.g., Criteo ads consistently
+    appearing alongside doubleclick.net, adnxs.com, etc.
     """
-    Build a network × category matrix for one profile.
-    normalize: 'row' = % of each network's ads in each category
-               'col' = % of each category supplied by each network
-               None  = raw counts
-    """
-    sub = cat_df[(cat_df['profile'] == profile) &
-                 (cat_df['advertiser_network'].isin(top_networks)) &
-                 (cat_df['ad_category'] != 'Unknown')]
-    mat = pd.crosstab(sub['advertiser_network'], sub['ad_category'])
-    # Ensure all top networks appear even if 0 ads
-    mat = mat.reindex(top_networks, fill_value=0)
-    if normalize == 'row':
-        mat = mat.div(mat.sum(axis=1).replace(0, np.nan), axis=0) * 100
-    elif normalize == 'col':
-        mat = mat.div(mat.sum(axis=0).replace(0, np.nan), axis=1) * 100
-    return mat.fillna(0)
+    with db_session(read_only=True) as con:
+        return con.execute(f"""
+            SELECT 
+                ae.advertiser_network,
+                REGEXP_EXTRACT(hr.url, '://([^/]+)', 1) AS tracker_domain,
+                COUNT(DISTINCT ae.ad_hash) AS shared_ads,
+                COUNT(DISTINCT ae.profile) AS n_profiles
+            FROM ads_enriched
+             ae
+            JOIN http_requests hr USING (visit_id)
+            WHERE {_confidence_clause(min_confidence).replace('is_valid_ad', 'ae.is_valid_ad').replace('confidence', 'ae.confidence')}
+              AND hr.is_tracker = true
+              AND ae.advertiser_network IS NOT NULL
+              AND ae.advertiser_network != 'unknown'
+            GROUP BY ae.advertiser_network, tracker_domain
+            HAVING shared_ads >= 5
+            ORDER BY shared_ads DESC
+            LIMIT {top_n}
+        """).df()
 
 
-def network_category_differential(cat_df: pd.DataFrame,
-                                  top_networks: list) -> pd.DataFrame:
+def network_category_tracking_matrix(min_confidence: str = 'high') -> pd.DataFrame:
+    """Three-way analysis: (network × category × avg tracker load).
+    
+    The definitive view for showing that specific network/content
+    combinations trigger disproportionate tracking activity.
     """
-    For each (network, category): shopping_share% − control_share%.
-    Positive values = network served MORE of that category to the shopping profile.
-    This is the 'smoking gun' matrix for behavioral retargeting.
-    """
-    shopping = network_category_matrix(cat_df, 'shopping', top_networks, 'row')
-    control = network_category_matrix(cat_df, 'control', top_networks, 'row')
-    # Align indices/columns
-    all_cats = sorted(set(shopping.columns) | set(control.columns))
-    shopping = shopping.reindex(columns=all_cats, fill_value=0)
-    control = control.reindex(columns=all_cats, fill_value=0)
-    return shopping - control
+    with db_session(read_only=True) as con:
+        return con.execute(f"""
+            WITH tracker_counts AS (
+                SELECT visit_id, COUNT(DISTINCT url) AS n_trackers
+                FROM http_requests
+                WHERE is_tracker = true
+                GROUP BY visit_id
+            )
+            SELECT 
+                ae.profile,
+                ae.advertiser_network,
+                LOWER(TRIM(ae.category)) AS category,
+                COUNT(DISTINCT ae.ad_hash) AS n_ads,
+                ROUND(AVG(tc.n_trackers), 1) AS avg_trackers
+            FROM ads_enriched
+             ae
+            LEFT JOIN tracker_counts tc USING (visit_id)
+            WHERE {_confidence_clause(min_confidence).replace('is_valid_ad', 'ae.is_valid_ad').replace('confidence', 'ae.confidence')}
+              AND ae.advertiser_network IS NOT NULL
+              AND ae.category IS NOT NULL
+            GROUP BY ae.profile, ae.advertiser_network, LOWER(TRIM(ae.category))
+            HAVING n_ads >= 2
+            ORDER BY avg_trackers DESC
+        """).df()
 
 
+# ─────────────────────────────────────────────────────────────────────
+# CLI ENTRYPOINT
+# ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    print("Ad counts by profile (high-confidence only):")
+    print("=" * 70)
+    print("VLM COVERAGE REPORT")
+    print("=" * 70)
+    print(vlm_coverage_report().to_string(index=False))
+
+    print("\n" + "=" * 70)
+    print("AD COUNTS BY PROFILE (high-confidence VLM only)")
+    print("=" * 70)
     print(ad_counts_by_profile(min_confidence='high').to_string(index=False))
 
-    print("\nTop advertiser networks (% of each profile's ads):")
+    print("\n" + "=" * 70)
+    print("TOP ADVERTISER NETWORKS (% share per profile)")
+    print("=" * 70)
     print(top_advertiser_networks(top_n=10).round(1).to_string())
 
-    print("\nOCR text statistics:")
-    print(ocr_text_stats().to_string(index=False))
+    print("\n" + "=" * 70)
+    print("TOP VLM CATEGORIES BY PROFILE")
+    print("=" * 70)
+    print(category_matrix(top_n=15).round(1).to_string())
 
-    print("\nKeyword category counts:")
-    print(keyword_category_counts().to_string(index=False))
+    print("\n" + "=" * 70)
+    print("TARGETING DELTA (shopping − control)")
+    print("=" * 70)
+    print(targeting_delta(top_n=15).round(2).to_string())
 
-    for profile in PROFILES:
-        if profile == 'control':
-            continue
-        print(f"\nDifferential categories: {profile} vs control")
-        print(differential_keyword_categories(profile, 'control')
-              .to_string(index=False))
+    print("\n" + "=" * 70)
+    print("AD PLACEMENT STATS")
+    print("=" * 70)
+    print(ad_placement_stats().to_string(index=False))
+
+    # print("\n" + "=" * 70)
+    # print("TRACKING INTENSITY BY VLM CATEGORY")
+    # print("=" * 70)
+    # print(tracking_intensity_by_category().head(20).to_string(index=False))

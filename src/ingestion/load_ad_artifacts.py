@@ -157,6 +157,7 @@ SIDECAR_FILES = {
 @dataclass
 class ProcessedAd:
     """One row in the final ads.parquet table (schema v3.0)."""
+    index: int
     profile: str
     visit_id: int
     page_url: str
@@ -203,6 +204,7 @@ def _extract_ocr_text(png_path: Path) -> str:
 
 
 def _process_one_ad(
+    key: int,
     json_path: Path,
     profile: str,
     disagreements: Optional[list[dict]] = None,
@@ -329,6 +331,7 @@ def _process_one_ad(
         ad_id = ad_meta.get("id") or rec.get("ad_id") or rec.get("id")
 
         processed.append(ProcessedAd(
+            index=key,
             profile=profile,
             visit_id=int(rec.get("visit_id", -1)),
             page_url=rec.get("page_url", ""),
@@ -368,6 +371,7 @@ def load_ad_artifacts() -> None:
     all_disagreements: list[dict] = []
     skipped_sidecars = 0
     malformed = 0
+    key = 0
 
     for profile in PROFILES:
         ads_dir = DATA_DIR / profile / "ads"
@@ -383,10 +387,11 @@ def load_ad_artifacts() -> None:
             if json_path.name in SIDECAR_FILES:
                 skipped_sidecars += 1
                 continue
-            ads = _process_one_ad(json_path, profile, all_disagreements)
+            ads = _process_one_ad(key, json_path, profile, all_disagreements)
             if not ads:
                 malformed += 1
             else:
+                key += 1
                 all_ads.extend(ads)
         added = len(all_ads) - before_count
         print(f"           → {added:,} ads ingested")

@@ -80,9 +80,9 @@ def init_database() -> None:
         registered += 1
 
     # ─────────────────────────────────────────────────────────────
-    # VLM ad descriptions (from ad_desc.parquet)
+    # VLM ad descriptions (from ads_desc.parquet)
     # ─────────────────────────────────────────────────────────────
-    ad_desc_path = PARQUET_DIR / "ad_desc.parquet"
+    ad_desc_path = PARQUET_DIR / "ads_desc.parquet"
     if ad_desc_path.exists():
         con.execute(f"""
             CREATE OR REPLACE VIEW ads_desc AS 
@@ -94,18 +94,19 @@ def init_database() -> None:
 
 
     con.execute(f"""
-        CREATE OR REPLACE VIEW ads_full AS
+        CREATE OR REPLACE VIEW ads_enriched AS
         SELECT 
             a.*,
             d.is_valid_ad,
-            d.primary_product_or_service,
-            d.advertiser_brand,
-            d.visual_description,
-            d.text_content AS vlm_text,
+            d.category,
+            d.product,
+            d.brand,
+            d.description,
+            d.content AS vlm_text,
             d.confidence AS vlm_confidence
         FROM read_parquet('{PARQUET_DIR}/ads.parquet') a
-        LEFT JOIN read_parquet('{PARQUET_DIR}/ad_desc.parquet') d
-        USING (ad_hash)
+        LEFT JOIN read_parquet('{PARQUET_DIR}/ads_desc.parquet') d
+        USING (visit_id, ad_hash)
     """)
 
     con.close()

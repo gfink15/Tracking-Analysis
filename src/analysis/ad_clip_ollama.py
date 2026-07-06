@@ -28,6 +28,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from wakepy import keep
+from json_repair import repair_json
+
 import pandas as pd
 import torch
 from PIL import Image, UnidentifiedImageError
@@ -51,6 +54,7 @@ import ollama
 
 from datetime import timedelta
 import time
+from pydantic import BaseModel, Field, field_validator
 
 # Project-local imports — matches your existing pattern in src/analysis/*
 import config
@@ -68,6 +72,8 @@ log = logging.getLogger("ad_desc")
 PARQUET_DIR = Path(getattr(config, "PARQUET_DIR", "artifacts/parquet"))
 ADS_PARQUET = PARQUET_DIR / "ads.parquet"
 ADS_CLIP_PARQUET = PARQUET_DIR / "ads_desc.parquet"
+BATCH_SIZE = 25
+
 
 # Root containing per-profile ad PNGs. Adjust if config.py names it differently.
 IMAGE_ROOT = Path(getattr(config, "DATA_DIR", "data"))
@@ -121,7 +127,7 @@ CATEGORIES = [
     "Adult",
     "Political",
     "Public Safety",
-    "Potential Scam",
+    "Likely Scam",
     "Other"
 ]
 
@@ -131,82 +137,217 @@ advertisement, captured during a web privacy study.
 FIRST, evaluate the image:
 - If the image is mostly blank, contains only a fragment of an ad, 
   is unreadable, is only a play button, or does not show a coherent advertisement, respond with 
-  EXACTLY this JSON and nothing else:
-  {{"is_valid_ad": false, "reason": "<brief explanation>"}}
+  this JSON and nothing else:
+    {{
+        "is_valid_ad": false, 
+        "category": "None",
+        "product": "None",
+        "brand": "None",
+        "description": "None",
+        "content": "None",
+        "confidence": "None",
+        "reason": "<brief explanation>"
+    }}
 
 - If the image DOES contain a coherent, readable advertisement, respond with:
-{{
-  "is_valid_ad": true,
-  "category": "<Specify a category from list: {CATEGORIES}>",
-  "primary_product_or_service": "<what is being sold>",
-  "advertiser_brand": "<brand name if visible, otherwise 'unknown'>",
-  "visual_description": "<one sentence describing the imagery>",
-  "text_content": "<any headline/CTA text visible>",
-  "confidence": "<'high', 'medium', or 'low' — how sure are you>"
-}}
-- If the image has a large button with a label such as 'Continue' or 'Download' it is likely a scam.
-  Please keep these ads marked as valid, but categorize them as a potential scam.
+    {{
+        "is_valid_ad": true,
+        "category": "<Specify a category from list: {CATEGORIES}>",
+        "product": "<what is being sold>",
+        "brand": "<brand name if visible, otherwise 'unknown'>",
+        "description": "<one sentence describing the imagery>",
+        "content": "<any headline/CTA text visible>",
+        "confidence": "<'high', 'medium', or 'low' — how sure are you>"
+        "reason": "None"
+    }}
+
+- CRITICAL: If the image has a large button with a label such as 'Continue' or 'Download' it is likely a scam.
+  Please keep these ads marked as valid, but CATEGORIZE THEM AS SCAM.
 
 
 Return ONLY the JSON. Do not include any other text or reasoning.
+You MUST populate all fields, including 'is_valid_ad', 'confidence', and 'reason'. Do not leave fields out.
 """
+
+# VLM_PROMPT = f"""You are analyzing an image that may or may not contain an 
+# advertisement, captured during a web privacy study.
+
+# FIRST, evaluate the image:
+# - If the image is mostly blank, contains only a fragment of an ad, 
+#   is unreadable, is only a play button, or does not show a coherent advertisement, it is
+#   not a valid ad. Please respond with a reason.
+
+# - If the image DOES contain a coherent, readable advertisement, respond with
+#   is_valid_ad: true, the category from this list {CATEGORIES}, the primary product
+#   or service, the brand being advertised, a visual description of the ad, the actual text content visible
+#   in the ad, and your confidence level.
+
+# - If the image has a large button with a label such as 'Continue' or 'Download' it is likely a scam.
+#   Please keep these ads marked as valid, but categorize them as a potential scam.
+
+# - Return all output as JSON with the following format:
+# {{
+#    "is_valid_ad": bool,
+#    "category": str,
+#    "product": str,
+#    "brand": "<brand name if visible, otherwise 'unknown'>",
+#    "description": "<one sentence describing the imagery>",
+#    "content": "<any headline/CTA text visible>",
+#    "confidence": "<'high', 'medium', or 'low' — how sure are you>"
+# }}
+# """
 
 
 # ─────────────────────────────────────────────────────────────────────
 # CLIP CLASSIFIER
 # ─────────────────────────────────────────────────────────────────────
-@dataclass
-class VisionResult:
-    is_valid_ad: bool
-    category: str | None
-    product: str | None
-    brand: str | None
-    description: str | None
-    content: str | None
-    confidence: str | None
-    reason: str | None
+#@dataclass
+class VisionResult(BaseModel):
+    is_valid_ad: bool = Field(
+        default=False,
+        description="Ad is valid"
+    )
+    category: str = Field(
+        default="None",
+        description="Category ad fits into"
+    )
+    product: str = Field(
+        default="None",
+        description="Primary product or service in ad"
+    )
+    brand: str = Field(
+        default="None",
+        description="Brand being advertised"
+    )
+    description: str = Field(
+        default="None",
+        description="Description of ad"
+    )
+    content: str = Field(
+        default="None",
+        description="Text visible in ad"
+    )
+    confidence: str = Field(
+        default="None",
+        description="Confidence level of accuracy"
+    )
+    reason: str = Field(
+        default="None",
+        description="Reasoning for marking ad as invalid"
+    )
 
 
 class VisionDescriber:
     def __init__(
         self,
+        #model_name: str = "hf.co/vinimuchulski/gemma-3-12b-it-qat-q4_0-gguf:latest",
+        #model_name: str = "llama3.2-vision:11b",
         model_name: str = "hf.co/vinimuchulski/gemma-3-12b-it-qat-q4_0-gguf:latest",
         device: Optional[str] = None,
     ):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        log.info("Loading CLIP %s on %s", model_name, self.device)
+        log.info("Loading Vision Model %s on %s", model_name, self.device)
 
-    def describe(self, image_path: Path) -> Optional[tuple[int, VisionResult]]:
+    #@field_validator("category", "content", "product", "brand", "description", "confidence", "reason", mode="before")
+    def describe(self, image_path: Path) -> tuple[int, VisionResult]:
         try:
             img = Image.open(image_path).convert("RGB")
         except (UnidentifiedImageError, FileNotFoundError, OSError) as e:
             log.debug("Could not open %s: %s", image_path.name, e)
-            return None
+            return 0, VisionResult(
+                is_valid_ad=False,
+                category="None",
+                product="None",
+                brand="None",
+                description="None",
+                content="None",
+                confidence="None",
+                reason="Ad Missing"
+            )
 
         if img.size[0] < 20 or img.size[1] < 20:
             return 0, VisionResult(
                 is_valid_ad=False,
-                category=None,
-                product=None,
-                brand=None,
-                description=None,
-                content=None,
-                confidence=None,
+                category="None",
+                product="None",
+                brand="None",
+                description="None",
+                content="None",
+                confidence="None",
                 reason="Image too small"
             )
 
         response = ollama.chat(
-            model='hf.co/vinimuchulski/gemma-3-12b-it-qat-q4_0-gguf:latest',
+            model="hf.co/vinimuchulski/gemma-3-12b-it-qat-q4_0-gguf:latest", #qwen3.5:4b, llama3.2-vision:11b, hf.co/vinimuchulski/gemma-3-12b-it-qat-q4_0-gguf:latest
             messages=[{
                 'role': 'user',
                 'content': VLM_PROMPT,
                 'images': [str(image_path)]
-            }]
+            }],
+            think=False,
+            format=VisionResult.model_json_schema(),
+            options={
+                "temperature": 0.0,
+                "num_ctx": 2048,
+                "num_predict": 2048,
+                "top_k": 20,
+                "top_p": 0.9
+            }
         )
-        try:
-            parsed_response = json.loads(str(response['message']['content']))
-            if not parsed_response['is_valid_ad']:
-                return response['total_duration'] / 1000, VisionResult(
+        return self.validate_response(response)
+        
+        
+    def validate_response(self, response: ollama.ChatResponse) -> tuple[int, VisionResult]:
+        if response.message.content and response.total_duration:
+            try:
+                parsed_response = VisionResult.model_validate_json(response.message.content, by_name=True)
+                #parsed_response = json.loads(str(response.message.content))
+                # if not parsed_response.is_valid_ad:
+                #     return response['total_duration'] / 1000, VisionResult(
+                #         is_valid_ad=False,
+                #         category="None",
+                #         product="None",
+                #         brand="None",
+                #         description="None",
+                #         content="None",
+                #         confidence="None",
+                #         reason=parsed_response.reason
+                #     )
+
+                # return response['total_duration'] / 1000, VisionResult(
+                #     is_valid_ad=parsed_response['is_valid_ad'],
+                #     category=parsed_response['category'],
+                #     product=parsed_response['product'],
+                #     brand=parsed_response['brand'],
+                #     description=parsed_response['description'],
+                #     content=parsed_response['content'],
+                #     confidence=parsed_response['confidence'],
+                #     reason=parsed_response['reason']
+                # )
+                return int(response.total_duration / 1000), parsed_response
+            except Exception as e:
+                log.error(f"Strict parse failed, attempting repair: {e}")
+                # log.error(f"Output: {str(response)}")
+                # return 0, VisionResult(
+                #         is_valid_ad=False,
+                #         category="None",
+                #         product="None",
+                #         brand="None",
+                #         description="None",
+                #         content="None",
+                #         confidence="None",
+                #         reason="JSON output unreadable"
+                #     )
+            try:
+                repaired = repair_json(response.message.content, schema=VisionResult.model_json_schema(), return_objects=True)
+                if isinstance(repaired, list) and repaired:
+                    repaired = repaired[0] if isinstance(repaired[0], dict) else {}
+                if isinstance(repaired, dict):
+                    return int(response.total_duration / 1000), VisionResult.model_validate(repaired)
+            except Exception as e:
+                log.error(f"Repair failed: {e}")
+                log.error(f"Output: {str(response)}")
+                return 0, VisionResult(
                     is_valid_ad=False,
                     category="None",
                     product="None",
@@ -214,22 +355,44 @@ class VisionDescriber:
                     description="None",
                     content="None",
                     confidence="None",
-                    reason=parsed_response['reason']
+                    reason="JSON output unreadable"
                 )
-
-            return response['total_duration'] / 1000, VisionResult(
-                is_valid_ad=True,
-                category=parsed_response['category'],
-                product=parsed_response['primary_product_or_service'],
-                brand=parsed_response['advertiser_brand'],
-                description=parsed_response['visual_description'],
-                content=parsed_response['text_content'],
-                confidence=parsed_response['confidence'],
-                reason="None"
+        elif response.total_duration:
+            log.error("Empty response message content")
+            return int(response.total_duration / 1000), VisionResult(
+                is_valid_ad=False,
+                category="None",
+                product="None",
+                brand="None",
+                description="None",
+                content="None",
+                confidence="None",
+                reason="Empty response message content"
             )
-        except Exception as e:
-            log.error(f"JSON output unreadable: {e}")
-            log.error(f"Output: {response}")
+        else:
+            log.error("Empty response")
+            return 0, VisionResult(
+                is_valid_ad=False,
+                category="None",
+                product="None",
+                brand="None",
+                description="None",
+                content="None",
+                confidence="None",
+                reason="Empty response"
+            )
+        
+        log.error(f"JSON Unreadable: {response}")
+        return 0, VisionResult(
+            is_valid_ad=False,
+            category="None",
+            product="None",
+            brand="None",
+            description="None",
+            content="None",
+            confidence="None",
+            reason="JSON Unreadable"
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -241,6 +404,22 @@ def resolve_image_path(row: pd.Series, image_root: Path) -> Optional[Path]:
     candidate = image_root / row["png_path"]
     return candidate if candidate.exists() else None
 
+# Save dataframe to parquet file every so often so fatal error doesn't erase work
+def flush_batch(batch: list[dict], output_path: Path) -> None:
+    """Append the current batch to the output Parquet."""
+    if not batch:
+        return
+    batch_df = pd.DataFrame(batch)
+    if output_path.exists():
+        # Read existing, concat, write back (safe pattern for small-to-medium data)
+        existing = pd.read_parquet(output_path)
+        combined = pd.concat([existing, batch_df], ignore_index=True)
+    else:
+        combined = batch_df
+    # Write atomically via temp file to avoid corruption on crash mid-write
+    tmp_path = output_path.with_suffix('.parquet.tmp')
+    combined.to_parquet(tmp_path, compression='zstd', index=False)
+    tmp_path.replace(output_path)  # atomic rename on POSIX and Windows
 
 # ─────────────────────────────────────────────────────────────────────
 # PIPELINE
@@ -251,6 +430,7 @@ def run_clip_pipeline(
     input_parquet: Path = ADS_PARQUET,
     output_parquet: Path = ADS_CLIP_PARQUET,
     image_root: Path = IMAGE_ROOT,
+    resume: bool = True,
 ) -> pd.DataFrame:
     """
     Main entry point. Loads ads.parquet, classifies each image, writes
@@ -259,37 +439,50 @@ def run_clip_pipeline(
 
     start_time = time.perf_counter()
     
+    processed_indices: set[int] = set()
+    if resume and output_parquet.exists():
+        existing = pd.read_parquet(output_parquet, columns=['index'])
+        processed_indices = set(existing['index'].tolist())
+        print(f"↻ Resuming: {len(processed_indices):,} ads already processed, skipping those.")
+
     log.info("Loading %s", input_parquet)
     ads = pd.read_parquet(input_parquet)
-    log.info("Loaded %d ad records", len(ads))
+    to_process = ads[~ads['index'].isin(processed_indices)]
+    log.info("Loaded %d ad records", len(to_process))
 
-    if "ad_hash" not in ads.columns:
+    if (len(to_process) == 0):
+        print("All ads already processed. Nothing to do.")
+        return to_process
+
+    if "ad_hash" not in to_process.columns:
         raise KeyError(
             "ads.parquet must contain an 'ad_hash' column for join-back. "
             "Update load_ad_artifacts.py to emit one if missing."
         )
 
     if not single_ad == None:
-        ads = ads.loc[ads['ad_hash'].isin(single_ad)]
+        to_process = to_process.loc[to_process['ad_hash'].isin(single_ad)]
         log.info("Running in sample list mode")
 
     if limit:
-        ads = ads.head(limit)
+        to_process = to_process.head(limit)
         log.info("SMOKE TEST MODE: classifying first %d ads only", limit)
 
     describer = VisionDescriber()
 
-    rows = []
+    #rows = []
+    batch_results: list[dict] = []
     missing = 0
     skipped = 0
     succeeded = 0
     time_total = 0 # in ms
     with logging_redirect_tqdm():
-        for i, (_, row) in enumerate(tqdm(ads.iterrows(), desc="Processing Ads"), start=1):
+        for i, (_, row) in enumerate(tqdm(to_process.iterrows(), desc="Processing Ads"), start=1):
             img_path = resolve_image_path(row, image_root)
             if img_path is None:
                 missing += 1
-                rows.append({
+                batch_results.append({
+                    "index": row["index"],
                     "profile": row["profile"],
                     "visit_id": row["visit_id"],
                     "ad_hash": row["ad_hash"],
@@ -303,11 +496,15 @@ def run_clip_pipeline(
                     "status": "image_not_found",
                     "reason": "None",
                 })
+                if len(batch_results) >= BATCH_SIZE:
+                    flush_batch(batch_results, output_parquet)
+                    batch_results = []
                 continue
             skip, reason = is_low_content_image(img_path)
             if skip:
                 skipped += 1
-                rows.append({
+                batch_results.append({
+                    "index": row["index"],
                     "profile": row["profile"],
                     "visit_id": row["visit_id"],
                     "ad_hash": row["ad_hash"],
@@ -321,11 +518,15 @@ def run_clip_pipeline(
                     "status": "image_skipped",
                     "reason": reason,
                 })
+                if len(batch_results) >= BATCH_SIZE:
+                    flush_batch(batch_results, output_parquet)
+                    batch_results = []
                 continue
 
             r = describer.describe(img_path)
             if r is None:
-                rows.append({
+                batch_results.append({
+                    "index": row["index"],
                     "profile": row["profile"],
                     "visit_id": row["visit_id"],
                     "ad_hash": row["ad_hash"],
@@ -339,9 +540,13 @@ def run_clip_pipeline(
                     "status": "vlm_error_empty",
                     "reason": "None",
                 })
+                if len(batch_results) >= BATCH_SIZE:
+                    flush_batch(batch_results, output_parquet)
+                    batch_results = []
                 continue
 
-            rows.append({
+            batch_results.append({
+                "index": row["index"],
                 "profile": row["profile"],
                 "visit_id": row["visit_id"],
                 "ad_hash": row["ad_hash"],
@@ -355,29 +560,34 @@ def run_clip_pipeline(
                 "status": "vlm_success",
                 "reason": r[1].reason,
             })
+            if len(batch_results) >= BATCH_SIZE:
+                    flush_batch(batch_results, output_parquet)
+                    batch_results = []
             succeeded += 1
-            time_total += (r[0] / 1000000000)
+            time_total += (r[0] / 1000000)
             if i % 10 == 0:
-                log.info("Describeded %d/%d", i, len(ads))
+                log.info("Described %d/%d", i, len(to_process))
 
     if missing:
         log.warning("Could not resolve %d image paths — check IMAGE_ROOT in config.py",
                     missing)
 
-    desc_df = pd.DataFrame(rows)
-    output_parquet.parent.mkdir(parents=True, exist_ok=True)
-    desc_df.to_parquet(output_parquet, index=False)
-    log.info("Wrote %d rows → %s", len(desc_df), output_parquet)
+    log.info(f"Analysis complete. Writing {len(batch_results)} remaining rows to parquet table...")
+    flush_batch(batch_results, output_parquet)
+    # desc_df = pd.DataFrame(rows)
+    # output_parquet.parent.mkdir(parents=True, exist_ok=True)
+    # desc_df.to_parquet(output_parquet, index=False)
+    # log.info("Wrote %d rows → %s", len(desc_df), output_parquet)
     end_time = time.perf_counter()
     elapsed = end_time - start_time
     hours, remainder = divmod(elapsed, 3600)
     minutes, seconds = divmod(remainder, 60)
     log.info(f"Elapsed time: {int(hours):02}:{int(minutes):02}:{int(seconds):05.2f}")
     if succeeded > 0:
-        log.info(f"Average prompt time: {str(timedelta(int(time_total/succeeded)))}")
+        log.info(f"Average prompt time: {str(timedelta(seconds=int(time_total/succeeded)))}")
 
     # _print_summary(clip_df, ads)
-    return desc_df
+    return to_process #desc_df
 
 
 def is_low_content_image(png_path: Path,
@@ -433,4 +643,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    with keep.running():
+        main()
