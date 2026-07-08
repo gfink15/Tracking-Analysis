@@ -42,19 +42,21 @@ for d in (ARTIFACTS_DIR, PARQUET_DIR, FIGURES_DIR, REFERENCE_DIR):
 # Order matters for plot consistency — 'control' first as the baseline.
 PROFILES = [
     'control', 
-    'shopping', 
-    # 'news', 
-    # 'health'
+    'gaming', 
+    'fitness', 
+    'finance',
+    'pop_culture'
     ]
 
 # Human-readable labels for plots and tables. Kept separate from the
 # internal profile keys so we can change presentation without breaking
 # code that references profile identifiers.
 PROFILE_LABELS = {
-    'control':  'Control (no history)',
-    'shopping': 'Shopping history',
-    'news':     'News history',
-    'health':   'Health history',
+    'control':     'Control (no history)',
+    'gaming':      'Gaming PC history',
+    'fitness':     'Fitness history',
+    'finance':     'Personal finance history',
+    'pop_culture': 'Pop culture history'
 }
 
 # Consistent colors across every figure in the project. A single source
@@ -62,9 +64,10 @@ PROFILE_LABELS = {
 # notice if "shopping" is red in Figure 2 and blue in Figure 5.
 PROFILE_COLORS = {
     'control':  '#888888',  # neutral gray for baseline
-    'shopping': '#E74C3C',  # red
-    'news':     '#3498DB',  # blue
-    'health':   '#2ECC71',  # green
+    'gaming': "#3B9ADA",  # blue
+    'fitness':     "#FF4A4A",  # red
+    'finance':   "#14CF0D",  # green
+    'pop_culture': "#e96df5" # pink
 }
 
 # ─────────────────────────────────────────────────────────────────────
@@ -102,5 +105,5 @@ BONFERRONI_CORRECT = True
 # ─────────────────────────────────────────────────────────────────────
 # DuckDB memory limit — adjust based on your machine. Setting this
 # prevents DuckDB from OOM-killing other processes on smaller systems.
-DUCKDB_MEMORY_LIMIT = '8GB'
+DUCKDB_MEMORY_LIMIT = '16GB'
 DUCKDB_THREADS = 4

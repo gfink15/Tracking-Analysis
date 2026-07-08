@@ -296,8 +296,7 @@ def fingerprinter_summary() -> pd.DataFrame:
 
     Combines results from the three detectors into one row-per-profile
     summary. This is the headline figure for fingerprinting analysis:
-    "the shopping profile encountered N canvas fingerprinters across
-    M visits, etc."
+    "profile X encountered N canvas fingerprinters across M visits," etc.
     """
     canvas = detect_canvas_fingerprinters()
     audio = detect_audio_fingerprinters()

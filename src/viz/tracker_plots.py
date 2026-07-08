@@ -222,7 +222,7 @@ def plot_differential_trackers(
 
     Args:
         df: DataFrame from differential_trackers(), sorted by lift desc.
-        profile_label: For the title (e.g., "shopping vs control").
+        profile_label: Human-readable comparison label for the title.
     """
     apply_style()
     top = df.head(top_n).iloc[::-1]   # reverse so highest is at top of plot
@@ -237,7 +237,7 @@ def plot_differential_trackers(
         ax.text(lift + 0.05, i, f'  {va}/{vb} (×{lift:.1f})',
                 va='center', fontsize=9)
 
-    ax.set_xlabel('Lift (visits in seeded ÷ visits in control)')
+    ax.set_xlabel('Lift (visits in profile A ÷ visits in profile B)')
     ax.set_title(f'Top {top_n} differential trackers: {profile_label}')
     ax.axvline(x=1.0, color='gray', linestyle='--', alpha=0.5,
                label='No difference')

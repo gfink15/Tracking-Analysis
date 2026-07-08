@@ -196,8 +196,8 @@ def plot_retargeting_presence(
             'n_visits_affected' (reach).
 
     This figure is often the most striking in a tracking study: if
-    the 'shopping' profile shows 5-10× more Criteo cookies than
-    'control', the figure makes that obvious at a glance.
+    one profile shows 5-10× more Criteo cookies than another, the
+    figure makes that obvious at a glance.
     """
     apply_style()
     pivot = (df.pivot(index='retargeter', columns='profile', values=metric)

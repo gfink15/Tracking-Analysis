@@ -37,6 +37,17 @@ from config import ALPHA, BONFERRONI_CORRECT, PROFILES
 from src.utils.db import db_session
 
 
+def _resolve_baseline_profile(baseline: str | None = None) -> str:
+    """Resolve the baseline profile from the configured profile list."""
+    if baseline is None:
+        if not PROFILES:
+            raise ValueError("config.PROFILES is empty.")
+        baseline = PROFILES[0]
+    if baseline not in PROFILES:
+        raise ValueError(f"Unknown profile: {baseline!r}. Valid: {PROFILES}")
+    return baseline
+
+
 # ─────────────────────────────────────────────────────────────────────
 # RESULT STRUCTURE — every test returns one of these
 # ─────────────────────────────────────────────────────────────────────
@@ -50,7 +61,7 @@ class TestResult:
     DataFrame aggregation.
     """
     test_name: str              # e.g., "chi-square (2x2)"
-    comparison: str             # e.g., "shopping vs control: doubleclick.net"
+    comparison: str             # e.g., "gaming vs control: doubleclick.net"
     statistic: float            # raw test statistic
     p_value: float              # uncorrected p
     p_value_corrected: float    # after multiple-testing correction
@@ -265,8 +276,8 @@ def mann_whitney_metric(
             WHERE profile IN {profiles}
             GROUP BY profile, visit_id
         '''
-        result = mann_whitney_metric('shopping', 'control', sql,
-                                     'requests per visit')
+        result = mann_whitney_metric('gaming', 'control', sql,
+                         'requests per visit')
 
     Why Mann-Whitney instead of t-test?
         Almost all OpenWPM metrics are heavily right-skewed (a few
@@ -426,7 +437,7 @@ METRIC_SQL = {
 def pairwise_battery(
     metric_key: str,
     correction: str = "bonferroni",
-    baseline: str = "control",
+    baseline: str | None = None,
 ) -> pd.DataFrame:
     """Run Mann-Whitney for every non-baseline profile vs baseline,
     plus Kruskal-Wallis omnibus, with correction applied across pairs.
@@ -434,6 +445,7 @@ def pairwise_battery(
     This is THE function you call to ask "does <metric> differ
     across my profiles?" — it produces a complete results table.
     """
+    baseline = _resolve_baseline_profile(baseline)
     if metric_key not in METRIC_SQL:
         raise ValueError(f"Unknown metric: {metric_key}. "
                          f"Available: {list(METRIC_SQL)}")
@@ -461,7 +473,8 @@ def pairwise_battery(
 
 if __name__ == "__main__":
     # Smoke test — run the full battery for the headline metric.
+    baseline = PROFILES[0]
     print("Pairwise battery: requests_per_visit")
-    print(pairwise_battery('requests_per_visit').to_string(index=False))
+    print(pairwise_battery('requests_per_visit', baseline=baseline).to_string(index=False))
     print("\nPairwise battery: unique_hosts_per_visit")
-    print(pairwise_battery('unique_hosts_per_visit').to_string(index=False))
+    print(pairwise_battery('unique_hosts_per_visit', baseline=baseline).to_string(index=False))

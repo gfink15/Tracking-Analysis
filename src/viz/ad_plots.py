@@ -6,6 +6,7 @@ All functions return matplotlib Figures and accept save_path.
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 from typing import Optional
@@ -88,7 +89,7 @@ def plot_network_heatmap(
         pivot: Wide DataFrame from top_advertiser_networks() —
             rows = networks, cols = profiles, cells = percentages.
 
-    Reads vertically: 'shopping' column shows the composition of
+    Reads vertically: each profile column shows the composition of
     its ads by network. Reads horizontally: each row shows how
     that network's share differs across profiles.
     """
@@ -248,7 +249,8 @@ def plot_differential_topics(
 
     Args:
         df: DataFrame from differential_topics(), sorted by lift desc.
-        profile_label: For the title (e.g., "shopping vs control")
+        profile_label: For the title (e.g., "gaming vs control") or any
+            other human-readable comparison label.
     """
     apply_style()
     top = df.head(top_n).iloc[::-1]   # reverse for top-at-top
@@ -275,7 +277,7 @@ def plot_differential_topics(
                 f'  {pa:.1f}% / {pb:.1f}% (×{lift:.1f})',
                 va='center', fontsize=9)
 
-    ax.set_xlabel('Lift (% in seeded ÷ % in control)')
+    ax.set_xlabel('Lift (% in profile A ÷ % in profile B)')
     ax.set_title(f'Top {top_n} overrepresented topics: {profile_label}')
     ax.axvline(x=1.0, color='gray', linestyle='--', alpha=0.5,
                label='No difference')
@@ -301,8 +303,7 @@ def plot_tracking_vs_ads_scatter(
 
     A strong positive slope confirms the "more tracking → more ads"
     hypothesis at the visit level. Differing slopes across profiles
-    (e.g., shopping shows steeper relationship) suggest profile-
-    specific ad-network responsiveness.
+    suggest profile-specific ad-network responsiveness.
     """
     apply_style()
     fig, ax = plt.subplots(figsize=(9, 6))
@@ -346,22 +347,23 @@ def plot_category_comparison(cat_df: pd.DataFrame, save_path=None):
 
 def plot_differential_targeting(diff_matrix: pd.DataFrame, save_path=None):
     """
-    Diverging heatmap: shopping% − control% per (network, category).
-    Red = network over-served category to shopping profile (retargeting evidence).
-    Blue = network suppressed category for shopping profile.
+    Diverging heatmap of profile-to-profile percentage-point differences.
+
+    Positive cells indicate over-serving to the first profile in the
+    comparison; negative cells indicate over-serving to the second.
     """
     vmax = max(abs(diff_matrix.values.min()), abs(diff_matrix.values.max()))
     fig, ax = plt.subplots(figsize=(11, 7))
     sns.heatmap(diff_matrix, annot=True, fmt=".1f",
                 cmap="RdBu_r", center=0, vmin=-vmax, vmax=vmax,
-                cbar_kws={'label': 'Δ% (shopping − control)'},
+                cbar_kws={'label': 'Δ% (percentage points)'},
                 linewidths=0.5, linecolor='white', ax=ax)
     ax.set_title('Differential Targeting: Which Networks Shifted Their Content?',
                  fontweight='bold', pad=15)
     ax.set_xlabel('Content Category')
     ax.set_ylabel('Ad Network')
     plt.figtext(0.5, -0.02,
-                'Red cells = network served MORE of this category to shopping profile (retargeting evidence)',
+                'Red cells = positive difference; blue cells = negative difference',
                 ha='center', fontsize=9, style='italic')
     plt.tight_layout()
     if save_path:
@@ -369,12 +371,16 @@ def plot_differential_targeting(diff_matrix: pd.DataFrame, save_path=None):
     return fig
 
 
-def plot_network_specialization(cat_df: pd.DataFrame, top_networks: list, save_path=None):
+def plot_network_specialization(cat_df: pd.DataFrame,
+                                top_networks: list,
+                                profile: str | None = None,
+                                save_path=None):
     """
-    Stacked bar of each network's category mix in shopping profile.
+    Stacked bar of each network's category mix within one profile.
     Networks dominated by one color = specialists; balanced = generalists.
     """
-    sub = cat_df[(cat_df['profile'] == 'shopping') &
+    profile = profile or PROFILES[0]
+    sub = cat_df[(cat_df['profile'] == profile) &
                  (cat_df['advertiser_network'].isin(top_networks)) &
                  (cat_df['ad_category'] != 'Unknown')]
     mat = pd.crosstab(sub['advertiser_network'], sub['ad_category'], normalize='index') * 100
@@ -384,7 +390,10 @@ def plot_network_specialization(cat_df: pd.DataFrame, top_networks: list, save_p
     mat.plot(kind='barh', stacked=True, ax=ax, colormap='tab10', width=0.7)
     ax.set_xlabel('% of Network\'s Ads')
     ax.set_ylabel('Ad Network')
-    ax.set_title('Network Specialization (Shopping Profile)', fontweight='bold')
+    ax.set_title(
+        f'Network Specialization ({PROFILE_LABELS.get(profile, profile)} Profile)',
+        fontweight='bold',
+    )
     ax.set_xlim(0, 100)
     ax.legend(title='Category', bbox_to_anchor=(1.02, 1), loc='upper left')
     plt.tight_layout()
@@ -434,18 +443,17 @@ def plot_category_heatmap(cat_matrix: pd.DataFrame,
 
 
 def plot_targeting_delta(delta_df: pd.DataFrame,
-                         title: str = "Category Targeting Delta\n"
-                                      "(shopping − control, percentage points)",
+                         title: Optional[str] = None,
                          figsize: tuple = (9, 8),
                          save_path=None) -> Figure:
-    """Diverging horizontal bar chart for shopping-vs-control category deltas.
+    """Diverging horizontal bar chart for category deltas between two profiles.
 
-    Positive bars = over-served to shopping profile.
-    Negative bars = over-served to control profile.
+    Positive bars = over-served to the first profile in the comparison.
+    Negative bars = over-served to the second profile in the comparison.
 
     Args:
         delta_df: Output of ads.targeting_delta() — index=category,
-                  single column of signed percentage-point differences.
+              single column of signed percentage-point differences.
         title: Figure title.
         figsize: Figure dimensions.
         save_path: Optional path to save the figure.
@@ -460,33 +468,53 @@ def plot_targeting_delta(delta_df: pd.DataFrame,
         series = delta_df
 
     series = series.sort_values()
+    values = series.to_numpy(dtype=float)
 
-    # Color-code: positive = shopping over-served (blue), negative = control (red)
-    colors = ['#c0392b' if v < 0 else '#2c7fb8' for v in series.values]
+    comparison_match = re.match(
+        r'^(?P<profile_a>.+)_minus_(?P<profile_b>.+?)(?:_pct)?$',
+        str(series.name),
+    )
+    if comparison_match:
+        profile_a = comparison_match.group('profile_a')
+        profile_b = comparison_match.group('profile_b')
+        label_a = PROFILE_LABELS.get(profile_a, profile_a.replace('_', ' '))
+        label_b = PROFILE_LABELS.get(profile_b, profile_b.replace('_', ' '))
+    else:
+        profile_a = 'profile_a'
+        profile_b = 'profile_b'
+        label_a = 'Profile A'
+        label_b = 'Profile B'
+
+    # Color-code: positive = first profile over-served, negative = second profile.
+    colors = ['#c0392b' if v < 0 else '#2c7fb8' for v in values]
 
     fig, ax = plt.subplots(figsize=figsize)
-    ax.barh(series.index, series.values, color=colors, edgecolor='black',
+    ax.barh(series.index, values, color=colors, edgecolor='black',
             linewidth=0.6)
 
     # Reference line at 0
     ax.axvline(0, color='black', linewidth=0.8, linestyle='-')
 
     # Annotate each bar with its numeric value
-    for i, v in enumerate(series.values):
+    for i, v in enumerate(values):
         offset = 0.15 if v >= 0 else -0.15
         ha = 'left' if v >= 0 else 'right'
         ax.text(v + offset, i, f"{v:+.1f}", va='center', ha=ha, fontsize=9)
 
-    ax.set_xlabel("Percentage-point difference (shopping − control)")
+    ax.set_xlabel(f"Percentage-point difference ({label_a} − {label_b})")
     ax.set_ylabel("VLM Ad Category")
-    ax.set_title(title, fontsize=13, pad=12)
+    ax.set_title(
+        title or f"Category Targeting Delta\n({label_a} − {label_b}, percentage points)",
+        fontsize=13,
+        pad=12,
+    )
 
     # Add subtle legend via annotations
-    xmax = max(abs(series.min()), abs(series.max())) * 1.25
+    xmax = max(abs(values.min()), abs(values.max())) * 1.25
     ax.set_xlim(-xmax, xmax)
-    ax.text(xmax * 0.95, -0.8, "→ over-served to shopping",
+    ax.text(xmax * 0.95, -0.8, f"→ over-served to {label_a}",
             ha='right', fontsize=8, style='italic', color='#2c7fb8')
-    ax.text(-xmax * 0.95, -0.8, "over-served to control ←",
+    ax.text(-xmax * 0.95, -0.8, f"over-served to {label_b} ←",
             ha='left', fontsize=8, style='italic', color='#c0392b')
 
     ax.grid(axis='x', alpha=0.3)

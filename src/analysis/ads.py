@@ -228,15 +228,45 @@ def category_matrix(min_confidence: str = 'high',
     return pivot
 
 
+def _resolve_profile_pair(profile_a: str | None = None,
+                          profile_b: str | None = None) -> tuple[str, str]:
+    """Resolve a profile comparison pair from config defaults.
+
+    If no explicit pair is provided, use the first two configured
+    profiles so the analysis stays aligned with config.PROFILES.
+    """
+    if profile_a is None and profile_b is None:
+        if len(PROFILES) < 2:
+            raise ValueError("Need at least two profiles in config.PROFILES.")
+        profile_a, profile_b = PROFILES[1], PROFILES[0]
+    elif profile_a is None or profile_b is None:
+        raise ValueError("Provide both profile_a and profile_b, or neither.")
+
+    if profile_a not in PROFILES or profile_b not in PROFILES:
+        raise ValueError(
+            f"Unknown profile comparison: {profile_a!r} vs {profile_b!r}. "
+            f"Configured profiles: {PROFILES}"
+        )
+
+    return profile_a, profile_b
+
+
 def targeting_delta(min_confidence: str = 'high',
-                    top_n: int = 15) -> pd.DataFrame:
-    """Shopping − control percentage-point delta per category."""
+                    top_n: int = 15,
+                    profile_a: str | None = None,
+                    profile_b: str | None = None) -> pd.DataFrame:
+    """Percentage-point delta per category for any two configured profiles."""
+    profile_a, profile_b = _resolve_profile_pair(profile_a, profile_b)
     matrix = category_matrix(min_confidence=min_confidence, top_n=top_n)
-    if 'shopping' not in matrix.columns or 'control' not in matrix.columns:
-        raise ValueError("Requires both 'shopping' and 'control' profiles.")
-    
-    delta = (matrix['shopping'] - matrix['control']).sort_values(ascending=False)
-    return delta.to_frame(name='shopping_minus_control_pct')
+
+    if profile_a not in matrix.columns or profile_b not in matrix.columns:
+        raise ValueError(
+            f"Comparison requires profiles present in the category matrix: "
+            f"{profile_a!r}, {profile_b!r}"
+        )
+
+    delta = (matrix[profile_a] - matrix[profile_b]).sort_values(ascending=False)
+    return delta.to_frame(name=f'{profile_a}_minus_{profile_b}_pct')
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -373,6 +403,8 @@ def network_category_tracking_matrix(min_confidence: str = 'high') -> pd.DataFra
 # CLI ENTRYPOINT
 # ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    profile_a, profile_b = _resolve_profile_pair()
+
     print("=" * 70)
     print("VLM COVERAGE REPORT")
     print("=" * 70)
@@ -394,9 +426,11 @@ if __name__ == "__main__":
     print(category_matrix(top_n=15).round(1).to_string())
 
     print("\n" + "=" * 70)
-    print("TARGETING DELTA (shopping − control)")
+    print(f"TARGETING DELTA ({profile_a} − {profile_b})")
     print("=" * 70)
-    print(targeting_delta(top_n=15).round(2).to_string())
+    print(targeting_delta(top_n=15,
+                         profile_a=profile_a,
+                         profile_b=profile_b).round(2).to_string())
 
     print("\n" + "=" * 70)
     print("AD PLACEMENT STATS")

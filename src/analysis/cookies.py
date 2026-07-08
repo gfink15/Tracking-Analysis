@@ -1,12 +1,10 @@
 """
 src/analysis/cookies.py — Cookie behavior comparisons across profiles.
 
-Cookies are where behavioral targeting becomes visible. A "shopping"
-profile that's been seeded with e-commerce history should accumulate:
-  • More third-party cookies overall
-  • More long-lived cookies (retargeting requires persistence)
-  • More cookie-sync events (trackers exchanging IDs)
-  • Cookies from retargeting-specific networks (Criteo, AdRoll, etc.)
+Cookies are where behavioral targeting becomes visible. A seeded
+profile should accumulate more third-party cookies, more long-lived
+cookies, more cookie-sync events, and more cookies from retargeting
+networks such as Criteo or AdRoll.
 
 This module provides functions that quantify each of these.
 """
@@ -171,7 +169,7 @@ def retargeting_cookie_presence() -> pd.DataFrame:
     targeting: each row is a (profile, retargeter) pair with the
     number of cookies set and unique visits affected.
 
-    A profile-vs-control delta here is the cleanest evidence you'll
+    A profile-to-baseline delta here is the cleanest evidence you'll
     get that history seeding triggered behavioral profiling.
     """
     # Build the SQL IN list once. We use LIKE rather than = because

@@ -30,6 +30,17 @@ from config import PROFILES
 from src.utils.db import db_session
 
 
+def _resolve_baseline_profile(baseline: str | None = None) -> str:
+    """Resolve the baseline profile from config defaults."""
+    if baseline is None:
+        if not PROFILES:
+            raise ValueError("config.PROFILES is empty.")
+        baseline = PROFILES[0]
+    if baseline not in PROFILES:
+        raise ValueError(f"Unknown profile: {baseline!r}. Valid: {PROFILES}")
+    return baseline
+
+
 # ─────────────────────────────────────────────────────────────────────
 # HOST EXTRACTION — the foundational primitive
 # ─────────────────────────────────────────────────────────────────────
@@ -223,19 +234,19 @@ def jaccard_similarity_matrix() -> pd.DataFrame:
 # ─────────────────────────────────────────────────────────────────────
 def differential_trackers(
     profile_a: str,
-    profile_b: str = 'control',
+    profile_b: str | None = None,
     min_visits: int = 3,
 ) -> pd.DataFrame:
     """Trackers appearing significantly more in profile_a than profile_b.
 
     This is the central tool for answering "what does history seeding
-    actually change?" If a tracker appears 50 times in 'shopping' but
-    only 2 times in 'control', it's a strong candidate for behavioral
+    actually change?" If a tracker appears far more often in one
+    profile than another, it's a strong candidate for behavioral
     targeting evidence.
 
     Args:
         profile_a: The "treatment" profile (with seeded history).
-        profile_b: The "control" profile (default: 'control').
+        profile_b: The comparison baseline (default: first configured profile).
         min_visits: Minimum visits in profile_a for the tracker to
             be included. Filters out one-off appearances that aren't
             statistically meaningful.
@@ -244,6 +255,7 @@ def differential_trackers(
         DataFrame sorted by lift (ratio of A frequency to B frequency).
         Columns: etld1, visits_a, visits_b, lift, delta.
     """
+    profile_b = _resolve_baseline_profile(profile_b)
     if profile_a not in PROFILES or profile_b not in PROFILES:
         raise ValueError(
             f"Unknown profile(s). Valid: {PROFILES}"
@@ -346,9 +358,10 @@ if __name__ == "__main__":
     print("\nJaccard similarity matrix:")
     print(jaccard_similarity_matrix().round(3).to_string())
 
+    baseline = _resolve_baseline_profile()
     for profile in PROFILES:
-        if profile == 'control':
+        if profile == baseline:
             continue
-        print(f"\nTop 10 differential trackers ({profile} vs control):")
-        diff = differential_trackers(profile, 'control').head(10)
+        print(f"\nTop 10 differential trackers ({profile} vs {baseline}):")
+        diff = differential_trackers(profile, baseline).head(10)
         print(diff.to_string(index=False))

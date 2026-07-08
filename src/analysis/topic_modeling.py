@@ -239,10 +239,10 @@ def topic_distribution_by_profile(
 ) -> pd.DataFrame:
     """How many ads of each topic appeared in each profile.
 
-    The central output of topic modeling. If profile 'shopping' has
-    50% of its ads in a topic dominated by "buy / shop / sale /
-    discount" keywords, while 'control' has 10%, behavioral targeting
-    is producing measurably different ad CONTENT, not just volume.
+    The central output of topic modeling. If one profile has 50% of its
+    ads in a topic dominated by "buy / shop / sale / discount" keywords,
+    while the baseline has 10%, behavioral targeting is producing
+    measurably different ad CONTENT, not just volume.
 
     Returns long-format: profile, topic_id, n_ads, pct_of_profile,
                           topic_keywords.
@@ -271,7 +271,7 @@ def topic_distribution_by_profile(
 
 def differential_topics(
     profile_a: str,
-    profile_b: str = 'control',
+    profile_b: str | None = None,
     save_name: str = "ads_v1",
 ) -> pd.DataFrame:
     """Topics overrepresented in profile_a vs profile_b.
@@ -280,6 +280,11 @@ def differential_topics(
     Sorted by lift descending. The "smoking gun" topics for
     behavioral targeting evidence.
     """
+    if profile_b is None:
+        if not PROFILES:
+            raise ValueError("config.PROFILES is empty.")
+        profile_b = PROFILES[0]
+
     dist = topic_distribution_by_profile(save_name)
     pivot = dist.pivot(index='topic', columns='profile',
                        values='pct_of_profile').fillna(0)
@@ -316,8 +321,8 @@ if __name__ == "__main__":
     print(topic_summary(model).head(20).to_string(index=False))
 
     for profile in PROFILES:
-        if profile == 'control':
+        if profile == PROFILES[0]:
             continue
-        print(f"\nDifferential topics: {profile} vs control")
-        print(differential_topics(profile, 'control')
+        print(f"\nDifferential topics: {profile} vs {PROFILES[0]}")
+        print(differential_topics(profile, PROFILES[0])
               .head(10).to_string(index=False))
