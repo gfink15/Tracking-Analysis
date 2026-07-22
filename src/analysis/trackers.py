@@ -98,20 +98,18 @@ def tracker_prevalence_by_profile(
             WHERE url LIKE 'http%'
         """).df()
 
-    # Step 2: Extract registered domain from raw URL
+    # Step 2: Enrich domain and entity data
     df_raw['domain'] = df_raw['url'].apply(get_registered_domain)
 
-    # Step 3: Resolve domain to entity node
     df_raw[['subsidiary_entity', 'parent_entity']] = df_raw['domain'].apply(
         lambda d: pd.Series(resolve_node(d, domain_to_node))
     )
 
-    # Step 4: Deduplicate within visit — one row per (profile, visit_id, domain)
     df_deduped = df_raw.drop_duplicates(
         subset=['profile', 'visit_id', 'domain']
     )
 
-    # Step 5: Aggregate by profile
+    # Step 3: Calculate and output results
     result = (
         df_deduped.groupby('profile')
         .agg(
@@ -123,7 +121,6 @@ def tracker_prevalence_by_profile(
         .reset_index()
     )
 
-    # Step 5: Compute per-visit rates
     result['domains_per_visit'] = (
         result['n_unique_domains'] / result['n_visits']
     ).round(2)
