@@ -100,6 +100,25 @@ def get_node_info(domain: str, domain_to_node: dict) -> SimpleNamespace:
     )
 
 
+def resolve_node(domain: str, domain_to_node: dict) -> tuple[str, str]:
+    """
+    Resolves subsidiary and parent entities for given domain string.
+    Wraps around get_node_info() for cleaner implementation in analysis
+    scripts. Falls back to raw domain string for both fields if unmapped.
+
+    Args:
+        domain:         Registered domain string to be mapped
+        domain_to_node: Domain-to-node mapping dict produced by build_mapping_tree()
+
+    Returns:
+        Tuple of (subsidiary_entity, parent_entity)
+    """
+    if not domain:
+        return (None, None)
+    node = get_node_info(domain, domain_to_node)
+    return (node.subsidiary_entity, node.parent_entity)
+
+
 def classify_relationship(req_node: Node, top_node: Node) -> dict:
     """
     Compares two entity tree nodes to determine their relationship.

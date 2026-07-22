@@ -29,6 +29,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from config import PROFILES
 from src.utils.db import db_session
 
+from src.utils.domain_utils import load_tree, resolve_node, get_registered_domain
+
 
 def _resolve_baseline_profile(baseline: str | None = None) -> str:
     """Resolve the baseline profile from config defaults."""
@@ -40,30 +42,30 @@ def _resolve_baseline_profile(baseline: str | None = None) -> str:
         raise ValueError(f"Unknown profile: {baseline!r}. Valid: {PROFILES}")
     return baseline
 
-
-# ─────────────────────────────────────────────────────────────────────
-# HOST EXTRACTION — the foundational primitive
-# ─────────────────────────────────────────────────────────────────────
-# Many queries need "the hostname from a URL." Rather than repeating
-# the regex in every function, we define it as a SQL fragment we can
-# inject. DuckDB's regexp_extract is fast and handles the common cases.
-#
-# Pattern explanation:
-#   ://     — match the protocol separator
-#   ([^/]+) — capture group: everything up to the next /
-#   1       — return capture group 1 (the hostname)
+# save for temporary use w/ not-yet-refactored functions
 HOSTNAME_SQL = "regexp_extract(url, '://([^/]+)', 1)"
-
-# eTLD+1 extraction (e.g., "ads.doubleclick.net" → "doubleclick.net").
-# A real implementation should use the public suffix list, but for
-# first-pass analysis this naive "last two labels" approach catches
-# most cases. We note this as a TODO for paper-quality results.
 ETLD1_SQL = """
     array_to_string(
         list_slice(string_split({host}, '.'), -2, -1),
         '.'
     )
 """
+
+# ─────────────────────────────────────────────────────────────────────
+# DICTIONARY & TREE SETUP
+# ─────────────────────────────────────────────────────────────────────
+# Initialize dictionary to avoid passing it as parameter to
+# every analysis function. Loads output tree once and sets
+# domain_to_node as global dictionary variable. 
+
+_domain_to_node: dict | None = None
+
+def _get_domain_to_node() -> dict:
+    """Load tree once per session, cached for subsequent calls."""
+    global _domain_to_node
+    if _domain_to_node is None:
+        _root, _domain_to_node = load_tree()
+    return _domain_to_node
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -81,9 +83,59 @@ def tracker_prevalence_by_profile(
             sanity check and for the "unknown unknowns" question.
 
     Returns:
-        DataFrame with columns: profile, n_visits, n_unique_hosts,
-        n_unique_etld1, hosts_per_visit, etld1_per_visit.
+        DataFrame with columns: profile, n_visits, n_unique_domains,
+        n_unique_subsidiaries, n_unique_parents, domains_per_visit,
+        subsidiaries_per_visit, parents_per_visit.
     """
+    # Get cached tree and dictionary
+    domain_to_node = _get_domain_to_node()
+
+    with db_session(read_only=True) as con:
+    # Step 1: Pull raw data rows from DB
+        df_raw = con.execute("""
+            SELECT profile, visit_id, url
+            FROM http_requests
+            WHERE url LIKE 'http%'
+        """).df()
+
+    # Step 2: Extract registered domain from raw URL
+    df_raw['domain'] = df_raw['url'].apply(get_registered_domain)
+
+    # Step 3: Resolve domain to entity node
+    df_raw[['subsidiary_entity', 'parent_entity']] = df_raw['domain'].apply(
+        lambda d: pd.Series(resolve_node(d, domain_to_node))
+    )
+
+    # Step 4: Deduplicate within visit — one row per (profile, visit_id, domain)
+    df_deduped = df_raw.drop_duplicates(
+        subset=['profile', 'visit_id', 'domain']
+    )
+
+    # Step 5: Aggregate by profile
+    result = (
+        df_deduped.groupby('profile')
+        .agg(
+            n_visits=('visit_id',            'nunique'),
+            n_unique_domains=('domain',           'nunique'),
+            n_unique_subsidiaries=('subsidiary_entity', 'nunique'),
+            n_unique_parents=('parent_entity',    'nunique'),
+        )
+        .reset_index()
+    )
+
+    # Step 5: Compute per-visit rates
+    result['domains_per_visit'] = (
+        result['n_unique_domains'] / result['n_visits']
+    ).round(2)
+    result['subsidiaries_per_visit'] = (
+        result['n_unique_subsidiaries'] / result['n_visits']
+    ).round(2)
+    result['parents_per_visit'] = (
+        result['n_unique_parents'] / result['n_visits']
+    ).round(2)
+
+    return result.sort_values('profile').reset_index(drop=True)
+
     with db_session(read_only=True) as con:
         df = con.execute(f"""
             WITH per_request AS (
