@@ -109,6 +109,12 @@ def tracker_prevalence_by_profile(
         subset=['profile', 'visit_id', 'domain']
     )
 
+    # # Per-request debug export — see raw domain → entity mappings before aggregation
+    # debug_raw_path = PROJECT_ROOT / "debug_raw_entity_mapping.csv"
+    # df_raw[['profile', 'visit_id', 'domain', 'subsidiary_entity', 'parent_entity']].to_csv(
+    #     debug_raw_path, index=False
+    # )
+
     # Step 3: Calculate and output results
     result = (
         df_deduped.groupby('profile')
