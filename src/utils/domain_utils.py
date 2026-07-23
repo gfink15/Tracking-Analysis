@@ -56,7 +56,7 @@ def get_registered_domain(url: str) -> str:
 
 
 def load_tree(
-    tree_csv_path: str="/home/anya/openwpm-tracker-analysis/data/output_tree.csv"
+    tree_csv_path: str="C:\\Users\\barran5\\openwpm-tracker-analysis\\data\\output_tree.csv"
 ) -> tuple[Node, dict]:
     """
     Loads pre-built entity tree from CSV and reconstructs bigtree object.
