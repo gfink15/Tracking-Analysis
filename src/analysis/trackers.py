@@ -133,42 +133,42 @@ def tracker_prevalence_by_profile(
 
     return result.sort_values('profile').reset_index(drop=True)
 
-    with db_session(read_only=True) as con:
-        df = con.execute(f"""
-            WITH per_request AS (
-                SELECT
-                    profile,
-                    visit_id,
-                    {HOSTNAME_SQL} AS host
-                FROM http_requests
-                WHERE url LIKE 'http%'  -- exclude data:, blob:, etc.
-            ),
-            per_request_with_etld AS (
-                SELECT
-                    profile,
-                    visit_id,
-                    host,
-                    {ETLD1_SQL.format(host='host')} AS etld1
-                FROM per_request
-            )
-            SELECT
-                profile,
-                COUNT(DISTINCT visit_id)       AS n_visits,
-                COUNT(DISTINCT host)           AS n_unique_hosts,
-                COUNT(DISTINCT etld1)          AS n_unique_etld1,
-                ROUND(
-                    COUNT(DISTINCT host) * 1.0 /
-                    NULLIF(COUNT(DISTINCT visit_id), 0), 2
-                )                              AS hosts_per_visit,
-                ROUND(
-                    COUNT(DISTINCT etld1) * 1.0 /
-                    NULLIF(COUNT(DISTINCT visit_id), 0), 2
-                )                              AS etld1_per_visit
-            FROM per_request_with_etld
-            GROUP BY profile
-            ORDER BY profile
-        """).df()
-    return df
+    # with db_session(read_only=True) as con:
+    #     df = con.execute(f"""
+    #         WITH per_request AS (
+    #             SELECT
+    #                 profile,
+    #                 visit_id,
+    #                 {HOSTNAME_SQL} AS host
+    #             FROM http_requests
+    #             WHERE url LIKE 'http%'  -- exclude data:, blob:, etc.
+    #         ),
+    #         per_request_with_etld AS (
+    #             SELECT
+    #                 profile,
+    #                 visit_id,
+    #                 host,
+    #                 {ETLD1_SQL.format(host='host')} AS etld1
+    #             FROM per_request
+    #         )
+    #         SELECT
+    #             profile,
+    #             COUNT(DISTINCT visit_id)       AS n_visits,
+    #             COUNT(DISTINCT host)           AS n_unique_hosts,
+    #             COUNT(DISTINCT etld1)          AS n_unique_etld1,
+    #             ROUND(
+    #                 COUNT(DISTINCT host) * 1.0 /
+    #                 NULLIF(COUNT(DISTINCT visit_id), 0), 2
+    #             )                              AS hosts_per_visit,
+    #             ROUND(
+    #                 COUNT(DISTINCT etld1) * 1.0 /
+    #                 NULLIF(COUNT(DISTINCT visit_id), 0), 2
+    #             )                              AS etld1_per_visit
+    #         FROM per_request_with_etld
+    #         GROUP BY profile
+    #         ORDER BY profile
+    #     """).df()
+    # return df
 
 
 def tracker_frequency_table(
