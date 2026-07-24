@@ -5,6 +5,7 @@ All paths, profile definitions, and analysis constants live here.
 Other modules import from this file so that changing a path or adding
 a profile only requires editing one location.
 """
+import os
 from pathlib import Path
 
 # ─────────────────────────────────────────────────────────────────────
@@ -28,6 +29,18 @@ DUCKDB_PATH   = ARTIFACTS_DIR / "analysis.duckdb"
 
 # External reference data (tracker lists, etc.) — checked into git.
 REFERENCE_DIR = PROJECT_ROOT / "reference"
+
+# --- Cross-repo dependency: tree CSV from openwpm-tracker-analysis ---
+# Default assumes sibling-repo layout. Override with TREE_CSV_PATH if needed.
+TREE_CSV_PATH = Path(os.environ.get(
+    "TREE_CSV_PATH",
+    PROJECT_ROOT.parent / "openwpm-tracker-analysis" / "data" / "output_tree.csv"
+))
+
+# Also allow using a local snapshot copy if present (for archival/release)
+_LOCAL_SNAPSHOT = DATA_DIR / "output_tree.csv"
+if _LOCAL_SNAPSHOT.exists() and "TREE_CSV_PATH" not in os.environ:
+    TREE_CSV_PATH = _LOCAL_SNAPSHOT
 
 # Ensure derived directories exist at import time. This is a small
 # convenience so downstream code can write files without each module

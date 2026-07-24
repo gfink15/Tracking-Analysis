@@ -26,8 +26,10 @@ Goal:   Contains shared utility functions that are called
 import logging
 import tldextract
 import pandas as pd
+from pathlib import Path
 from types import SimpleNamespace
 from bigtree import Node, Tree, dataframe_to_tree
+from config import TREE_CSV_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +58,7 @@ def get_registered_domain(url: str) -> str:
 
 
 def load_tree(
-    tree_csv_path: str="C:\\Users\\barran5\\openwpm-tracker-analysis\\data\\output_tree.csv"
+    tree_csv_path: Path=TREE_CSV_PATH
 ) -> tuple[Node, dict]:
     """
     Loads pre-built entity tree from CSV and reconstructs bigtree object.
