@@ -87,94 +87,94 @@ def tracker_prevalence_by_profile(
         n_unique_subsidiaries, n_unique_parents, domains_per_visit,
         subsidiaries_per_visit, parents_per_visit.
     """
-    # Get cached tree and dictionary
-    domain_to_node = _get_domain_to_node()
-
-    with db_session(read_only=True) as con:
-    # Step 1: Pull raw data rows from DB
-        df_raw = con.execute("""
-            SELECT profile, visit_id, url
-            FROM http_requests
-            WHERE url LIKE 'http%'
-        """).df()
-
-    # Step 2: Enrich domain and entity data
-    df_raw['domain'] = df_raw['url'].apply(get_registered_domain)
-
-    df_raw[['subsidiary_entity', 'parent_entity']] = df_raw['domain'].apply(
-        lambda d: pd.Series(resolve_node(d, domain_to_node))
-    )
-
-    df_deduped = df_raw.drop_duplicates(
-        subset=['profile', 'visit_id', 'domain']
-    )
-
-    # # Per-request debug export — see raw domain → entity mappings before aggregation
-    # debug_raw_path = PROJECT_ROOT / "debug_raw_entity_mapping.csv"
-    # df_raw[['profile', 'visit_id', 'domain', 'subsidiary_entity', 'parent_entity']].to_csv(
-    #     debug_raw_path, index=False
-    # )
-
-    # Step 3: Calculate and output results
-    result = (
-        df_deduped.groupby('profile')
-        .agg(
-            n_visits=('visit_id',            'nunique'),
-            n_unique_domains=('domain',           'nunique'),
-            n_unique_subsidiaries=('subsidiary_entity', 'nunique'),
-            n_unique_parents=('parent_entity',    'nunique'),
-        )
-        .reset_index()
-    )
-
-    result['domains_per_visit'] = (
-        result['n_unique_domains'] / result['n_visits']
-    ).round(2)
-    result['subsidiaries_per_visit'] = (
-        result['n_unique_subsidiaries'] / result['n_visits']
-    ).round(2)
-    result['parents_per_visit'] = (
-        result['n_unique_parents'] / result['n_visits']
-    ).round(2)
-
-    return result.sort_values('profile').reset_index(drop=True)
+    # # Get cached tree and dictionary
+    # domain_to_node = _get_domain_to_node()
 
     # with db_session(read_only=True) as con:
-    #     df = con.execute(f"""
-    #         WITH per_request AS (
-    #             SELECT
-    #                 profile,
-    #                 visit_id,
-    #                 {HOSTNAME_SQL} AS host
-    #             FROM http_requests
-    #             WHERE url LIKE 'http%'  -- exclude data:, blob:, etc.
-    #         ),
-    #         per_request_with_etld AS (
-    #             SELECT
-    #                 profile,
-    #                 visit_id,
-    #                 host,
-    #                 {ETLD1_SQL.format(host='host')} AS etld1
-    #             FROM per_request
-    #         )
-    #         SELECT
-    #             profile,
-    #             COUNT(DISTINCT visit_id)       AS n_visits,
-    #             COUNT(DISTINCT host)           AS n_unique_hosts,
-    #             COUNT(DISTINCT etld1)          AS n_unique_etld1,
-    #             ROUND(
-    #                 COUNT(DISTINCT host) * 1.0 /
-    #                 NULLIF(COUNT(DISTINCT visit_id), 0), 2
-    #             )                              AS hosts_per_visit,
-    #             ROUND(
-    #                 COUNT(DISTINCT etld1) * 1.0 /
-    #                 NULLIF(COUNT(DISTINCT visit_id), 0), 2
-    #             )                              AS etld1_per_visit
-    #         FROM per_request_with_etld
-    #         GROUP BY profile
-    #         ORDER BY profile
+    # # Step 1: Pull raw data rows from DB
+    #     df_raw = con.execute("""
+    #         SELECT profile, visit_id, url
+    #         FROM http_requests
+    #         WHERE url LIKE 'http%'
     #     """).df()
-    # return df
+
+    # # Step 2: Enrich domain and entity data
+    # df_raw['domain'] = df_raw['url'].apply(get_registered_domain)
+
+    # df_raw[['subsidiary_entity', 'parent_entity']] = df_raw['domain'].apply(
+    #     lambda d: pd.Series(resolve_node(d, domain_to_node))
+    # )
+
+    # df_deduped = df_raw.drop_duplicates(
+    #     subset=['profile', 'visit_id', 'domain']
+    # )
+
+    # # # Per-request debug export — see raw domain → entity mappings before aggregation
+    # # debug_raw_path = PROJECT_ROOT / "debug_raw_entity_mapping.csv"
+    # # df_raw[['profile', 'visit_id', 'domain', 'subsidiary_entity', 'parent_entity']].to_csv(
+    # #     debug_raw_path, index=False
+    # # )
+
+    # # Step 3: Calculate and output results
+    # result = (
+    #     df_deduped.groupby('profile')
+    #     .agg(
+    #         n_visits=('visit_id',            'nunique'),
+    #         n_unique_domains=('domain',           'nunique'),
+    #         n_unique_subsidiaries=('subsidiary_entity', 'nunique'),
+    #         n_unique_parents=('parent_entity',    'nunique'),
+    #     )
+    #     .reset_index()
+    # )
+
+    # result['domains_per_visit'] = (
+    #     result['n_unique_domains'] / result['n_visits']
+    # ).round(2)
+    # result['subsidiaries_per_visit'] = (
+    #     result['n_unique_subsidiaries'] / result['n_visits']
+    # ).round(2)
+    # result['parents_per_visit'] = (
+    #     result['n_unique_parents'] / result['n_visits']
+    # ).round(2)
+
+    # return result.sort_values('profile').reset_index(drop=True)
+
+    with db_session(read_only=True) as con:
+        df = con.execute(f"""
+            WITH per_request AS (
+                SELECT
+                    profile,
+                    visit_id,
+                    {HOSTNAME_SQL} AS host
+                FROM http_requests
+                WHERE url LIKE 'http%'  -- exclude data:, blob:, etc.
+            ),
+            per_request_with_etld AS (
+                SELECT
+                    profile,
+                    visit_id,
+                    host,
+                    {ETLD1_SQL.format(host='host')} AS etld1
+                FROM per_request
+            )
+            SELECT
+                profile,
+                COUNT(DISTINCT visit_id)       AS n_visits,
+                COUNT(DISTINCT host)           AS n_unique_hosts,
+                COUNT(DISTINCT etld1)          AS n_unique_etld1,
+                ROUND(
+                    COUNT(DISTINCT host) * 1.0 /
+                    NULLIF(COUNT(DISTINCT visit_id), 0), 2
+                )                              AS hosts_per_visit,
+                ROUND(
+                    COUNT(DISTINCT etld1) * 1.0 /
+                    NULLIF(COUNT(DISTINCT visit_id), 0), 2
+                )                              AS etld1_per_visit
+            FROM per_request_with_etld
+            GROUP BY profile
+            ORDER BY profile
+        """).df()
+    return df
 
 
 def tracker_frequency_table(

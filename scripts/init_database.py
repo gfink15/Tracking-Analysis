@@ -39,6 +39,7 @@ def init_database() -> None:
         print("   Run ingestion first:")
         print("     python -m src.ingestion.load_sqlite")
         print("     python -m src.ingestion.load_ad_artifacts")
+        print("     python -m src.ingestion.enrich_parquet")
         sys.exit(1)
 
     print(f"Found {len(parquet_files)} Parquet file(s):")
