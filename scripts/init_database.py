@@ -81,6 +81,24 @@ def init_database() -> None:
         registered += 1
 
     # ─────────────────────────────────────────────────────────────
+    # HTTP requests enriched (from http_requests_enriched.parquet)
+    # ─────────────────────────────────────────────────────────────
+    http_enriched_path = PARQUET_DIR / "http_requests_enriched.parquet"
+    if http_enriched_path.exists():
+        con.execute(f"""
+            CREATE OR REPLACE VIEW http_requests_enriched AS
+            SELECT * FROM read_parquet('{http_enriched_path}')
+        """)
+        # Verify the view works by querying row count.
+        nn = con.execute("SELECT COUNT(*) FROM http_requests_enriched").fetchone()
+        n = nn[0] if nn else 0
+        print(f"  ✓ {'http_requests_enriched':25s} ({n:>10,} rows)")
+        registered += 1
+    else:
+        print(f"  ⚠  {http_enriched_path.name} not found — run enrich_parquet.py first:")
+        print( "       python -m src.ingestion.enrich_parquet")
+
+    # ─────────────────────────────────────────────────────────────
     # VLM ad descriptions (from ads_desc.parquet)
     # ─────────────────────────────────────────────────────────────
     ad_desc_path = PARQUET_DIR / "ads_desc.parquet"
@@ -90,10 +108,11 @@ def init_database() -> None:
             SELECT * FROM read_parquet('{ad_desc_path}')
         """)
         print(f"✓ Registered ads_desc view ({ad_desc_path.name})")
+        registered += 1
     else:
         print(f"⚠  {ad_desc_path.name} not found — skipping ads_desc registration")
 
-
+    # join ads and ads_desc to create and register ads_enriched
     con.execute(f"""
         CREATE OR REPLACE VIEW ads_enriched AS
         SELECT 
@@ -109,6 +128,7 @@ def init_database() -> None:
         LEFT JOIN read_parquet('{PARQUET_DIR}/ads_desc.parquet') d
         USING (visit_id, ad_hash)
     """)
+    registered += 1
 
     con.close()
     print("\n" + "─" * 60)
