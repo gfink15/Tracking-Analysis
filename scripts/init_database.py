@@ -99,7 +99,7 @@ def init_database() -> None:
         print( "       python -m src.ingestion.enrich_parquet")
 
     # ─────────────────────────────────────────────────────────────
-    # VLM ad descriptions (from ads_desc.parquet)
+    # VLM ad descriptions and ads_enriched (from ads_desc.parquet)
     # ─────────────────────────────────────────────────────────────
     ad_desc_path = PARQUET_DIR / "ads_desc.parquet"
     if ad_desc_path.exists():
@@ -109,26 +109,27 @@ def init_database() -> None:
         """)
         print(f"✓ Registered ads_desc view ({ad_desc_path.name})")
         registered += 1
-    else:
-        print(f"⚠  {ad_desc_path.name} not found — skipping ads_desc registration")
 
-    # join ads and ads_desc to create and register ads_enriched
-    con.execute(f"""
-        CREATE OR REPLACE VIEW ads_enriched AS
-        SELECT 
-            a.*,
-            d.is_valid_ad,
-            d.category,
-            d.product,
-            d.brand,
-            d.description,
-            d.content AS vlm_text,
-            d.confidence AS vlm_confidence
-        FROM read_parquet('{PARQUET_DIR}/ads.parquet') a
-        LEFT JOIN read_parquet('{PARQUET_DIR}/ads_desc.parquet') d
-        USING (visit_id, ad_hash)
-    """)
-    registered += 1
+        # join ads and ads_desc to create and register ads_enriched
+        con.execute(f"""
+            CREATE OR REPLACE VIEW ads_enriched AS
+            SELECT 
+                a.*,
+                d.is_valid_ad,
+                d.category,
+                d.product,
+                d.brand,
+                d.description,
+                d.content AS vlm_text,
+                d.confidence AS vlm_confidence
+            FROM read_parquet('{PARQUET_DIR}/ads.parquet') a
+            LEFT JOIN read_parquet('{PARQUET_DIR}/ads_desc.parquet') d
+            USING (visit_id, ad_hash)
+        """)
+        registered += 1
+
+    else:
+        print(f"⚠  {ad_desc_path.name} not found — skipping ads_desc registration and ads_enriched creation")
 
     con.close()
     print("\n" + "─" * 60)
