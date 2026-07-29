@@ -84,8 +84,8 @@ def _save_if_requested(fig: Figure, save_path: Optional[Path | str]) -> None:
 # ─────────────────────────────────────────────────────────────────────
 def plot_prevalence_bars(
     df: pd.DataFrame,
-    value_col: str = 'n_unique_etld1',
-    ylabel: str = 'Unique third-party eTLD+1s',
+    value_col: str = 'n_unique_parents',
+    ylabel: str = 'Unique tracking entities contacted',
     title: str = 'Tracking breadth by seeded history profile',
     save_path: Optional[Path | str] = None,
 ) -> Figure:
@@ -141,7 +141,7 @@ def plot_tracker_heatmap(
 
     Args:
         df: Long-format DataFrame from tracker_frequency_table(),
-            with columns: profile, etld1, pct_of_visits.
+            with columns: profile, parent_entity, pct_of_visits.
         top_n: Number of trackers to show (by total prevalence).
 
     The heatmap is often the single most informative figure in a
@@ -150,7 +150,7 @@ def plot_tracker_heatmap(
     """
     apply_style()
     # Pivot to wide format for the heatmap.
-    pivot = df.pivot(index='etld1', columns='profile', values='pct_of_visits')
+    pivot = df.pivot(index='parent_entity', columns='profile', values='pct_of_visits')
     pivot = pivot.reindex(columns=PROFILES).fillna(0)
     # Sort trackers by total prevalence so the most common are at top.
     pivot = pivot.loc[pivot.sum(axis=1).sort_values(ascending=False).index[:top_n]]

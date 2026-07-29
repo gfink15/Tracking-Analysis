@@ -15,6 +15,16 @@ we use Python only for the final shaping.
 Usage in a notebook:
     from src.analysis.trackers import tracker_prevalence_by_profile
     df = tracker_prevalence_by_profile()
+
+REFACTOR LOG: Anya Barringer, Summer 2026
+    - Source table: http_requests -> http_requests_enriched (per enrich_parquet.py)
+    - Domain extraction: HOSTNAME_SQL -> pre-computed "domain" column
+    - Entity aggregation: ETLD1_SQL -> pre-computed "parent_entity" column
+        (subsidiary_column also referenced occasionally)
+    - First-party filter: add "WHERE relationship_tier NOT IN ('first_party', 'unknown')
+        to remove first-party requests and unknown (unresolvable domain) requests
+        (references relationship_tier column from classify_relationships())
+    - Tier breakdown: added n_external_third_party, n_inter_family_third_party stats
 """
 from __future__ import annotations
 
@@ -51,22 +61,6 @@ ETLD1_SQL = """
     )
 """
 
-# ─────────────────────────────────────────────────────────────────────
-# DICTIONARY & TREE SETUP
-# ─────────────────────────────────────────────────────────────────────
-# Initialize dictionary to avoid passing it as parameter to
-# every analysis function. Loads output tree once and sets
-# domain_to_node as global dictionary variable. 
-
-_domain_to_node: dict | None = None
-
-def _get_domain_to_node() -> dict:
-    """Load tree once per session, cached for subsequent calls."""
-    global _domain_to_node
-    if _domain_to_node is None:
-        _root, _domain_to_node = load_tree()
-    return _domain_to_node
-
 
 # ─────────────────────────────────────────────────────────────────────
 # CORE METRICS
@@ -84,93 +78,51 @@ def tracker_prevalence_by_profile(
 
     Returns:
         DataFrame with columns: profile, n_visits, n_unique_domains,
-        n_unique_subsidiaries, n_unique_parents, domains_per_visit,
+        n_unique_subsidiaries, n_unique_parents, n_external_third_party,
+        n_inter_family_third_party, domains_per_visit, 
         subsidiaries_per_visit, parents_per_visit.
     """
-    # # Get cached tree and dictionary
-    # domain_to_node = _get_domain_to_node()
-
-    # with db_session(read_only=True) as con:
-    # # Step 1: Pull raw data rows from DB
-    #     df_raw = con.execute("""
-    #         SELECT profile, visit_id, url
-    #         FROM http_requests
-    #         WHERE url LIKE 'http%'
-    #     """).df()
-
-    # # Step 2: Enrich domain and entity data
-    # df_raw['domain'] = df_raw['url'].apply(get_registered_domain)
-
-    # df_raw[['subsidiary_entity', 'parent_entity']] = df_raw['domain'].apply(
-    #     lambda d: pd.Series(resolve_node(d, domain_to_node))
-    # )
-
-    # df_deduped = df_raw.drop_duplicates(
-    #     subset=['profile', 'visit_id', 'domain']
-    # )
-
-    # # # Per-request debug export — see raw domain → entity mappings before aggregation
-    # # debug_raw_path = PROJECT_ROOT / "debug_raw_entity_mapping.csv"
-    # # df_raw[['profile', 'visit_id', 'domain', 'subsidiary_entity', 'parent_entity']].to_csv(
-    # #     debug_raw_path, index=False
-    # # )
-
-    # # Step 3: Calculate and output results
-    # result = (
-    #     df_deduped.groupby('profile')
-    #     .agg(
-    #         n_visits=('visit_id',            'nunique'),
-    #         n_unique_domains=('domain',           'nunique'),
-    #         n_unique_subsidiaries=('subsidiary_entity', 'nunique'),
-    #         n_unique_parents=('parent_entity',    'nunique'),
-    #     )
-    #     .reset_index()
-    # )
-
-    # result['domains_per_visit'] = (
-    #     result['n_unique_domains'] / result['n_visits']
-    # ).round(2)
-    # result['subsidiaries_per_visit'] = (
-    #     result['n_unique_subsidiaries'] / result['n_visits']
-    # ).round(2)
-    # result['parents_per_visit'] = (
-    #     result['n_unique_parents'] / result['n_visits']
-    # ).round(2)
-
-    # return result.sort_values('profile').reset_index(drop=True)
-
     with db_session(read_only=True) as con:
         df = con.execute(f"""
-            WITH per_request AS (
+            WITH tracker_requests AS (
                 SELECT
                     profile,
                     visit_id,
-                    {HOSTNAME_SQL} AS host
-                FROM http_requests
-                WHERE url LIKE 'http%'  -- exclude data:, blob:, etc.
-            ),
-            per_request_with_etld AS (
-                SELECT
-                    profile,
-                    visit_id,
-                    host,
-                    {ETLD1_SQL.format(host='host')} AS etld1
-                FROM per_request
+                    domain,
+                    subsidiary_entity,
+                    parent_entity,
+                    relationship_tier
+                FROM http_requests_enriched
+                WHERE url LIKE 'http%'
+                  AND relationship_tier NOT IN ('first-party', 'unknown')
             )
             SELECT
                 profile,
-                COUNT(DISTINCT visit_id)       AS n_visits,
-                COUNT(DISTINCT host)           AS n_unique_hosts,
-                COUNT(DISTINCT etld1)          AS n_unique_etld1,
+                COUNT(DISTINCT visit_id)           AS n_visits,
+                COUNT(DISTINCT domain)             AS n_unique_domains,
+                COUNT(DISTINCT subsidiary_entity)  AS n_unique_subsidiaries,
+                COUNT(DISTINCT parent_entity)      AS n_unique_parents,
+                -- Disaggregated entity counts
+                COUNT(DISTINCT CASE 
+                    WHEN relationship_tier = 'external third-party' 
+                    THEN parent_entity END)        AS n_external_third_party,
+                COUNT(DISTINCT CASE 
+                    WHEN relationship_tier = 'inter-family third-party' 
+                    THEN parent_entity END)        AS n_inter_family_third_party,
+                -- Averages per visit
                 ROUND(
-                    COUNT(DISTINCT host) * 1.0 /
+                    COUNT(DISTINCT domain) * 1.0 /
                     NULLIF(COUNT(DISTINCT visit_id), 0), 2
-                )                              AS hosts_per_visit,
+                )                                  AS domains_per_visit,
                 ROUND(
-                    COUNT(DISTINCT etld1) * 1.0 /
+                    COUNT(DISTINCT subsidiary_entity) * 1.0 /
                     NULLIF(COUNT(DISTINCT visit_id), 0), 2
-                )                              AS etld1_per_visit
-            FROM per_request_with_etld
+                )                                  AS subsidiaries_per_visit,
+                ROUND(
+                    COUNT(DISTINCT parent_entity) * 1.0 /
+                    NULLIF(COUNT(DISTINCT visit_id), 0), 2
+                )                                  AS parents_per_visit
+            FROM tracker_requests
             GROUP BY profile
             ORDER BY profile
         """).df()
@@ -180,10 +132,12 @@ def tracker_prevalence_by_profile(
 def tracker_frequency_table(
     top_n: int = 50,
 ) -> pd.DataFrame:
-    """Frequency of each tracker (eTLD+1) appearing per profile.
+    """Frequency of each tracker (parent_entity) appearing per profile.
+    Uses corporate parent entity for big-picture understanding of the
+    wide reach of major tracking entities across websites.
 
     Produces a long-format table you can pivot for heatmaps:
-        profile | etld1 | n_visits_seen | pct_of_visits
+        profile | parent_entity | n_visits_seen | pct_of_visits
 
     Args:
         top_n: Return the top-N trackers by total cross-profile
@@ -195,24 +149,25 @@ def tracker_frequency_table(
     """
     with db_session(read_only=True) as con:
         df = con.execute(f"""
-            WITH per_visit_host AS (
-                -- Deduplicate so each (profile, visit, etld1) is one row.
+            WITH per_visit_entity AS (
+                -- Deduplicate so each (profile, visit, parent_entity) is one row.
                 -- A page making 50 requests to the same tracker should
                 -- count as ONE tracker-presence, not 50.
                 SELECT DISTINCT
                     profile,
                     visit_id,
-                    {ETLD1_SQL.format(host=HOSTNAME_SQL)} AS etld1
-                FROM http_requests
+                    parent_entity
+                FROM http_requests_enriched
                 WHERE url LIKE 'http%'
+                  AND relationship_tier NOT IN ('first-party', 'unknown')
             ),
-            per_profile_etld1 AS (
+            per_profile_entity AS (
                 SELECT
                     profile,
-                    etld1,
+                    parent_entity,
                     COUNT(*) AS n_visits_seen
-                FROM per_visit_host
-                GROUP BY profile, etld1
+                FROM per_visit_entity
+                GROUP BY profile, parent_entity
             ),
             profile_visit_totals AS (
                 SELECT profile, COUNT(DISTINCT visit_id) AS total_visits
@@ -223,27 +178,29 @@ def tracker_frequency_table(
                 -- Identify the top-N most prevalent trackers across all
                 -- profiles, so we return the same set for every profile
                 -- (otherwise comparisons get apples-to-oranges).
-                SELECT etld1
-                FROM per_profile_etld1
-                GROUP BY etld1
+                SELECT parent_entity
+                FROM per_profile_entity
+                GROUP BY parent_entity
                 ORDER BY SUM(n_visits_seen) DESC
                 LIMIT {top_n}
             )
             SELECT
                 p.profile,
-                p.etld1,
+                p.parent_entity,
                 p.n_visits_seen,
                 ROUND(p.n_visits_seen * 100.0 / t.total_visits, 2)
                     AS pct_of_visits
-            FROM per_profile_etld1 p
+            FROM per_profile_entity p
             JOIN profile_visit_totals t USING (profile)
-            WHERE p.etld1 IN (SELECT etld1 FROM top_overall)
-            ORDER BY p.etld1, p.profile
+            WHERE p.parent_entity IN (SELECT parent_entity FROM top_overall)
+            ORDER BY p.parent_entity, p.profile
         """).df()
     return df
 
 
-def jaccard_similarity_matrix() -> pd.DataFrame:
+def jaccard_similarity_matrix(
+    granularity: str = "subsidiary_entity",  # "domain", "subsidiary_entity", or "parent_entity"
+) -> pd.DataFrame:
     """Pairwise Jaccard similarity of tracker sets between profiles.
 
     Jaccard(A, B) = |A ∩ B| / |A ∪ B|
@@ -254,20 +211,37 @@ def jaccard_similarity_matrix() -> pd.DataFrame:
 
     This is the single most useful "at a glance" summary of how
     different the tracking landscapes are across profiles.
+
+    Args:
+        granularity: The entity level at which to compare tracker sets.
+            - "domain":            most granular; endpoint-level comparison.
+            - "subsidiary_entity": mid-level; product/service-level comparison.
+                                   Default — best balance of resolution and
+                                   methodological accuracy.
+            - "parent_entity":     least granular; corporate actor-level
+                                   comparison. Will produce higher similarity
+                                   scores by collapsing corporate families.
     """
+    valid = {"domain", "subsidiary_entity", "parent_entity"}
+    if granularity not in valid:
+        raise ValueError(
+            f"granularity must be one of {valid}, got '{granularity}'"
+        )
+
     with db_session(read_only=True) as con:
-        # Build the set of eTLD+1s per profile.
+        # Build the set of entities per profile at the requested granularity.
         sets_df = con.execute(f"""
             SELECT DISTINCT
                 profile,
-                {ETLD1_SQL.format(host=HOSTNAME_SQL)} AS etld1
-            FROM http_requests
+                {granularity} AS entity
+            FROM http_requests_enriched
             WHERE url LIKE 'http%'
+              AND relationship_tier NOT IN ('first-party', 'unknown')
         """).df()
 
     # Convert to a dict of sets — much cleaner than SQL for this step.
     profile_sets = {
-        profile: set(group['etld1'])
+        profile: set(group['entity'])
         for profile, group in sets_df.groupby('profile')
     }
 
@@ -276,11 +250,13 @@ def jaccard_similarity_matrix() -> pd.DataFrame:
     # sorted() needs an actual iterable of comparable items; cast keys to list
     profiles = sorted(str(profile) for profile in profile_sets.keys())
     matrix = pd.DataFrame(index=profiles, columns=profiles, dtype=float)
+
     for a in profiles:
         for b in profiles:
             sa, sb = profile_sets[a], profile_sets[b]
             union = sa | sb
             matrix.loc[a, b] = len(sa & sb) / len(union) if union else 0.0
+
     return matrix
 
 
