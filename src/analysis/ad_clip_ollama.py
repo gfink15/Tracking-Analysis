@@ -77,59 +77,8 @@ BATCH_SIZE = 25
 
 # Root containing per-profile ad PNGs. Adjust if config.py names it differently.
 IMAGE_ROOT = Path(getattr(config, "DATA_DIR", "data"))
-CATEGORIES = [
-    "Automotive",
-    "Beauty & Personal Care",
-    "Business Services",
-    "Construction & Home Improvement",
-    "Consumer Electronics",
-    "Education",
-    "Energy & Utilities",
-    "Entertainment",
-    "Fashion & Apparel",
-    "Finance",
-    "Food & Beverage",
-    "Gaming",
-    "Government & Public Services",
-    "Health & Wellness",
-    "Healthcare",
-    "Home & Garden",
-    "Industrial & Manufacturing",
-    "Insurance",
-    "Jewelry & Luxury Goods",
-    "Legal Services",
-    "Marketplace & Classifieds",
-    "Media & Publishing",
-    "Nonprofit & Charity",
-    "Pets",
-    "Real Estate",
-    "Recruitment & Careers",
-    "Restaurants & Dining",
-    "Retail",
-    "Software & SaaS",
-    "Sports & Fitness",
-    "Technology",
-    "Telecommunications",
-    "Travel & Hospitality",
-    "Transportation & Logistics",
-    "Consumer Packaged Goods",
-    "Cryptocurrency & Web3",
-    "Dating",
-    "Events & Conferences",
-    "Parenting & Family",
-    "Photography & Creative Services",
-    "Religion & Faith",
-    "Security & Privacy",
-    "Smart Home & IoT",
-    "Streaming Services",
-    "Subscription Services",
-    "Toys & Hobbies",
-    "Adult",
-    "Political",
-    "Public Safety",
-    "Likely Scam",
-    "Other"
-]
+
+CATEGORIES = [c.value for c in config.Categories]
 
 VLM_PROMPT = f"""You are analyzing an image that may or may not contain an 
 advertisement, captured during a web privacy study.

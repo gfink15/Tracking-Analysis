@@ -4,8 +4,11 @@ import sys
 import pandas as pd
 from pathlib import Path
 
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
+
+from config import Categories as c
 
 from src.analysis.pixels import extract_pixels_from_sqlite
 from src.analysis.ads_pixels_join import (
@@ -43,11 +46,12 @@ register_seeding_pixels(con, seeding_all)
 create_ads_with_pixel_context(con, min_confidence=0.7)
 
 # 5. Register your persona-affinity map (from your VLM category list)
+
 PERSONA_AFFINITY = {
-    "gaming": ["Consumer Electronics", "Entertainment", "Gaming", "Technology",],
-    "fitness":     ["Beauty & Personal Care", "Fashion & Apparel", "Health & Wellness",],
-    "finance": ["Finance", "Travel & Hospitality", "Parenting & Family",],
-    "pop_culture": ["Photography & Creative Services", "Fashion & Apparel", "Media & Publishing",],
+    "gaming":           [c.Electronics.name, c.Entertainment.name, c.Gaming.name, c.Technology.name, c.Retail.name, c.Software.name, c.Crypto.name, c.Privacy.name, c.Stream.name, c.Hobbies.name, c.Events.name],
+    "sports_car_fan":   [c.Auto.name, c.Construction.name, c.Transport.name, c.Hobbies.name],
+    "investor":         [c.Finance.name, c.Business.name, c.Career.name, c.Charity.name, c.Crypto.name, c.Estate.name, c.Insurance.name, c.Legal.name],
+    "retiree":          [c.Entertainment.name, c.Beauty.name, c.Govt.name, c.Legal.name, c.Estate.name, c.Travel.name, c.Family.name, c.Healthcare.name, c.Events.name],
     "control":  [],  # baseline — no expected affinity
     # ... fill in from your VLM category list
 }

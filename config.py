@@ -6,6 +6,7 @@ Other modules import from this file so that changing a path or adding
 a profile only requires editing one location.
 """
 from pathlib import Path
+from enum import Enum
 
 # ─────────────────────────────────────────────────────────────────────
 # PATHS
@@ -43,9 +44,9 @@ for d in (ARTIFACTS_DIR, PARQUET_DIR, FIGURES_DIR, REFERENCE_DIR):
 PROFILES = [
     'control', 
     'gaming', 
-    'fitness', 
-    'finance',
-    'pop_culture'
+    'sports_car_fan', 
+    'investor',
+    'retiree'
     ]
 
 # Human-readable labels for plots and tables. Kept separate from the
@@ -53,10 +54,10 @@ PROFILES = [
 # code that references profile identifiers.
 PROFILE_LABELS = {
     'control':     'Control (no history)',
-    'gaming':      'Gaming PC history',
-    'fitness':     'Fitness history',
-    'finance':     'Personal finance history',
-    'pop_culture': 'Pop culture history'
+    'gaming':      'Gaming history',
+    'sports_car_fan':     'Automotive history',
+    'investor':     'Investment history',
+    'retiree': 'Retiree history'
 }
 
 # Consistent colors across every figure in the project. A single source
@@ -65,9 +66,9 @@ PROFILE_LABELS = {
 PROFILE_COLORS = {
     'control':  '#888888',  # neutral gray for baseline
     'gaming': "#3B9ADA",  # blue
-    'fitness':     "#FF4A4A",  # red
-    'finance':   "#14CF0D",  # green
-    'pop_culture': "#e96df5" # pink
+    'sports_car_fan':     "#FF4A4A",  # red
+    'investor':   "#14CF0D",  # green
+    'retiree': "#e96df5" # pink
 }
 
 # ─────────────────────────────────────────────────────────────────────
@@ -107,3 +108,56 @@ BONFERRONI_CORRECT = True
 # prevents DuckDB from OOM-killing other processes on smaller systems.
 DUCKDB_MEMORY_LIMIT = '16GB'
 DUCKDB_THREADS = 4
+
+class Categories(Enum):
+    Auto = "Automotive",
+    Beauty = "Beauty & Personal Care",
+    Business = "Business Services",
+    Construction = "Construction & Home Improvement",
+    Electronics = "Consumer Electronics",
+    Education = "Education",
+    Energy = "Energy & Utilities",
+    Entertainment = "Entertainment",
+    Fashion = "Fashion & Apparel",
+    Finance = "Finance",
+    Food = "Food & Beverage",
+    Gaming = "Gaming",
+    Govt = "Government & Public Services",
+    Wellness = "Health & Wellness",
+    Healthcare = "Healthcare",
+    Garden = "Home & Garden",
+    Manufacturing = "Industrial & Manufacturing",
+    Insurance = "Insurance",
+    Luxury = "Jewelry & Luxury Goods",
+    Legal = "Legal Services",
+    Marketplace = "Marketplace & Classifieds",
+    Media = "Media & Publishing",
+    Charity = "Nonprofit & Charity",
+    Pets = "Pets",
+    Estate = "Real Estate",
+    Career = "Recruitment & Careers",
+    Dining = "Restaurants & Dining",
+    Retail = "Retail",
+    Software = "Software & SaaS",
+    Fitness = "Sports & Fitness",
+    Technology = "Technology",
+    Telecom = "Telecommunications",
+    Travel = "Travel & Hospitality",
+    Transport = "Transportation & Logistics",
+    Goods = "Consumer Packaged Goods",
+    Crypto = "Cryptocurrency & Web3",
+    Dating = "Dating",
+    Events = "Events & Conferences",
+    Family = "Parenting & Family",
+    Photos = "Photography & Creative Services",
+    Faith = "Religion & Faith",
+    Privacy = "Security & Privacy",
+    IoT = "Smart Home & IoT",
+    Stream = "Streaming Services",
+    Subscription = "Subscription Services",
+    Hobbies = "Toys & Hobbies",
+    Adult = "Adult",
+    Political = "Political",
+    Safety = "Public Safety",
+    Scam = "Likely Scam",
+    Other = "Other"
