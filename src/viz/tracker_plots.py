@@ -227,9 +227,13 @@ def plot_differential_trackers(
     apply_style()
     top = df.head(top_n).iloc[::-1]   # reverse so highest is at top of plot
 
+    # Infer entity column from whichever granularity was used
+    entity_col = 'subsidiary_entity' if 'subsidiary_entity' in df.columns \
+                 else 'parent_entity'
+
     fig, ax = plt.subplots(figsize=(9, max(4, top_n * 0.3)))
 
-    ax.barh(top['etld1'], top['lift'],
+    ax.barh(top[entity_col], top['lift'],
             color=PROFILE_COLORS.get(profile_label.split()[0], '#999999'),
             edgecolor='black', linewidth=0.5)
 

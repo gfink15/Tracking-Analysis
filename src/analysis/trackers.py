@@ -25,6 +25,8 @@ REFACTOR LOG: Anya Barringer, Summer 2026
         to remove first-party requests and unknown (unresolvable domain) requests
         (references relationship_tier column from classify_relationships())
     - Tier breakdown: added n_external_third_party, n_inter_family_third_party stats
+    - Granularity paramter: added granularity flag with ValueError guard, allowing for
+        analysis at multiple levels of domain-entity identity
 """
 from __future__ import annotations
 
@@ -52,14 +54,15 @@ def _resolve_baseline_profile(baseline: str | None = None) -> str:
         raise ValueError(f"Unknown profile: {baseline!r}. Valid: {PROFILES}")
     return baseline
 
-# save for temporary use w/ not-yet-refactored functions
-HOSTNAME_SQL = "regexp_extract(url, '://([^/]+)', 1)"
-ETLD1_SQL = """
-    array_to_string(
-        list_slice(string_split({host}, '.'), -2, -1),
-        '.'
-    )
-"""
+# Original constants for extracting tracker as etld+1 string from url
+
+# HOSTNAME_SQL = "regexp_extract(url, '://([^/]+)', 1)"
+# ETLD1_SQL = """
+#     array_to_string(
+#         list_slice(string_split({host}, '.'), -2, -1),
+#         '.'
+#     )
+# """
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -266,7 +269,8 @@ def jaccard_similarity_matrix(
 def differential_trackers(
     profile_a: str,
     profile_b: str | None = None,
-    min_visits: int = 3,
+    granularity: str = "parent_entity",  # "parent_entity" or "subsidiary_entity"
+    min_visits: int = 3
 ) -> pd.DataFrame:
     """Trackers appearing significantly more in profile_a than profile_b.
 
@@ -281,11 +285,24 @@ def differential_trackers(
         min_visits: Minimum visits in profile_a for the tracker to
             be included. Filters out one-off appearances that aren't
             statistically meaningful.
+        granularity: Entity level at which to compare tracker presence.
+            - "parent_entity":     corporate actor level (default). Best for
+                                   headline findings — "which companies target
+                                   seeded profiles more aggressively?"
+            - "subsidiary_entity": product/service level. Useful for drill-down
+                                   — "which specific products are driving lift?"
 
     Returns:
         DataFrame sorted by lift (ratio of A frequency to B frequency).
-        Columns: etld1, visits_a, visits_b, lift, delta.
+        Columns: parent_entity (or subsidiary_entity), visits_a, visits_b,
+                 lift, delta.
     """
+    valid = {"parent_entity", "subsidiary_entity"}
+    if granularity not in valid:
+        raise ValueError(
+            f"granularity must be one of {valid}, got '{granularity}'"
+        )
+    
     profile_b = _resolve_baseline_profile(profile_b)
     if profile_a not in PROFILES or profile_b not in PROFILES:
         raise ValueError(
@@ -294,27 +311,28 @@ def differential_trackers(
 
     with db_session(read_only=True) as con:
         df = con.execute(f"""
-            WITH per_visit_etld AS (
+            WITH per_visit_entity AS (
                 SELECT DISTINCT
                     profile,
                     visit_id,
-                    {ETLD1_SQL.format(host=HOSTNAME_SQL)} AS etld1
-                FROM http_requests
+                    {granularity} AS entity
+                FROM http_requests_enriched
                 WHERE url LIKE 'http%'
                   AND profile IN ('{profile_a}', '{profile_b}')
+                  AND relationship_tier NOT IN ('first-party', 'unknown')
             ),
             counts AS (
                 SELECT
-                    etld1,
+                    entity,
                     SUM(CASE WHEN profile = '{profile_a}' THEN 1 ELSE 0 END)
                         AS visits_a,
                     SUM(CASE WHEN profile = '{profile_b}' THEN 1 ELSE 0 END)
                         AS visits_b
-                FROM per_visit_etld
-                GROUP BY etld1
+                FROM per_visit_entity
+                GROUP BY entity
             )
             SELECT
-                etld1,
+                entity AS {granularity},
                 visits_a,
                 visits_b,
                 visits_a - visits_b AS delta,
@@ -326,20 +344,39 @@ def differential_trackers(
             WHERE visits_a >= {min_visits}
             ORDER BY lift DESC, delta DESC
         """).df()
+
     return df
 
 
-def trackers_unique_to_profile(profile: str) -> pd.DataFrame:
+def trackers_unique_to_profile(
+        profile: str,
+        granularity: str = "parent_entity"  # "parent_entity" or "subsidiary_entity"
+) -> pd.DataFrame:
     """Trackers that appear in ONLY this profile, in no others.
 
     The strongest possible evidence of profile-specific tracking:
     these hosts are summoned by something about this profile's
     seeded history that no other profile triggers.
 
+    Args:
+        profile: The profile to investigate.
+        granularity: Entity level at which to test uniqueness.
+            - "parent_entity":     corporate actor level (default). Strongest
+                                    claim — this entire company appears nowhere
+                                    else.
+            - "subsidiary_entity": product/service level. A subsidiary product
+                                    uniquely activated by this profile's history.
+
     Returns:
-        DataFrame with columns: etld1, n_visits_seen.
+        DataFrame with columns: parent_entity or subsidiary_entity, n_visits_seen.
         Empty DataFrame if no profile-unique trackers exist.
     """
+    valid = {"parent_entity", "subsidiary_entity"}
+    if granularity not in valid:
+        raise ValueError(
+            f"granularity must be one of {valid}, got '{granularity}'"
+        )
+    
     other_profiles = [p for p in PROFILES if p != profile]
     if not other_profiles:
         raise ValueError("Need at least 2 profiles for this analysis.")
@@ -349,33 +386,39 @@ def trackers_unique_to_profile(profile: str) -> pd.DataFrame:
 
     with db_session(read_only=True) as con:
         df = con.execute(f"""
-            WITH etlds_in_target AS (
+            WITH entities_in_target AS (
                 SELECT DISTINCT
-                    {ETLD1_SQL.format(host=HOSTNAME_SQL)} AS etld1
-                FROM http_requests
-                WHERE profile = '{profile}' AND url LIKE 'http%'
+                    {granularity} AS entity
+                FROM http_requests_enriched
+                WHERE profile = '{profile}'
+                  AND url LIKE 'http%'
+                  AND relationship_tier NOT IN ('first-party', 'unknown')
             ),
-            etlds_in_others AS (
+            entities_in_others AS (
                 SELECT DISTINCT
-                    {ETLD1_SQL.format(host=HOSTNAME_SQL)} AS etld1
-                FROM http_requests
-                WHERE profile IN ({others_sql}) AND url LIKE 'http%'
+                    {granularity} AS entity
+                FROM http_requests_enriched
+                WHERE profile IN ({others_sql})
+                  AND url LIKE 'http%'
+                  AND relationship_tier NOT IN ('first-party', 'unknown')
             ),
-            unique_etlds AS (
-                SELECT etld1 FROM etlds_in_target
+            unique_entities AS (
+                SELECT entity FROM entities_in_target
                 EXCEPT
-                SELECT etld1 FROM etlds_in_others
+                SELECT entity FROM entities_in_others
             )
             SELECT
-                u.etld1,
+                u.entity AS {granularity},
                 COUNT(DISTINCT r.visit_id) AS n_visits_seen
-            FROM unique_etlds u
-            JOIN http_requests r
-                ON {ETLD1_SQL.format(host=HOSTNAME_SQL)} = u.etld1
+            FROM unique_entities u
+            JOIN http_requests_enriched r
+                ON r.{granularity} = u.entity
             WHERE r.profile = '{profile}'
-            GROUP BY u.etld1
+              AND r.relationship_tier NOT IN ('first-party', 'unknown')
+            GROUP BY u.entity
             ORDER BY n_visits_seen DESC
         """).df()
+
     return df
 
 
