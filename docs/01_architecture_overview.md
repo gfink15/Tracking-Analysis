@@ -128,6 +128,8 @@ editing one file.
 | `FIGURES_DIR` | Where notebooks save figure PDFs. |
 | `DUCKDB_PATH` | Path to the unified DuckDB file. |
 | `REFERENCE_DIR` | External reference data (tracker blocklists, etc.) — git-tracked. |
+| `TREE_CSV_PATH` | Path to domain-entity hierarchy mapping tree, as produced in sister repository (see README). |
+| `_LOCAL_SNAPSHOT` | Path to local copy of mapping tree, if exists. |
 
 **Important:** All paths are resolved relative to `PROJECT_ROOT`, NOT
 the current working directory. This means scripts and notebooks work
@@ -177,10 +179,14 @@ python -m src.ingestion.load_sqlite
 #    with OCR text and advertiser network identification)
 python -m src.ingestion.load_ad_artifacts
 
-# 3. Register Parquet files as views in analysis.duckdb
+# 3. Create http_requests_enriched.parquet file using output_tree.csv. Adds
+#    subsidiary and parent entity columns, and relationship classification.
+python -m src.ingestion.enrich_parquet
+
+# 4. Register Parquet files as views in analysis.duckdb
 python scripts/init_database.py
 
-# 4. Open notebooks and run cells
+# 5. Open notebooks and run cells
 jupyter lab notebooks/01_data_overview.ipynb
 
 Subsequent re-runs only require steps you've actually invalidated:
