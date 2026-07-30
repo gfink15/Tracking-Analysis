@@ -8,12 +8,15 @@ Container:  Part of CSC Summer Research 2026 Project
             "Pervasive Online Third-Party Tracking: A Measurement Study"
             with Graham Fink, under Dr. Rebecca Drucker
 
-Goal:   Enriches crawl data in TARGET parquet files to add domain, entity, and
-        relationship classification columns, allowing for more accurate analysis
-        of third-party tracking. Output files TARGET_enriched.parquet will
-        be called by later scripts eg trackers.py. Uses domain-entity mapping tree
-        and helper utility functions from openwpm-tracker-analysis module. Including
-        this step in separate script allows for clean separation of classification
+Goal:   Enriches crawl data in TARGET parquet files to add domain, entity,
+        and relationship classification columns, allowing for more accurate
+        analysis of third-party tracking. Uses domain-entity mapping tree
+        and helper utility functions from openwpm-tracker-analysis module.
+        - Output files TARGET_enriched.parquet will be called by later scripts
+        eg trackers.py. 
+        - If other OpenWPM tables need enriching, simply add to ENRICHED_TABLES in config.py
+        and to ENRICHMENT_TARGETS in enrich_parquet.py before running.
+        - Including this step in separate script allows for clean separation of classification
         and analysis steps. Run once after load_sqlite.py and before init_database.py
         as part of data cleaning step (Silver layer).
 """
