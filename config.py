@@ -101,6 +101,18 @@ OPENWPM_TABLES = [
 ]
 
 # ─────────────────────────────────────────────────────────────────────
+# ENRICHED TABLE NAMES
+# ─────────────────────────────────────────────────────────────────────
+# These are the tables that are generated via the enrichment pipeline
+# in enrich_parquet.py. Access these enriched tables in analysis scripts
+# for information like domain-entity mapping and relationship classification.
+# Update corresponding constant ENRICHMENT_TARGETS in enrich_parquet.py.
+ENRICHED_TABLES = [
+    'http_requests_enriched',       # outgoing network requests
+    'javascript_cookies_enriched'   # cookies set/read via document.cookie
+]
+
+# ─────────────────────────────────────────────────────────────────────
 # STATISTICAL SETTINGS
 # ─────────────────────────────────────────────────────────────────────
 # Significance threshold for hypothesis tests. Defined here so every

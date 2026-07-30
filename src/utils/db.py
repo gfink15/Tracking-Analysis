@@ -27,6 +27,7 @@ from config import (
     DUCKDB_MEMORY_LIMIT,
     DUCKDB_THREADS,
     OPENWPM_TABLES,
+    ENRICHED_TABLES,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -112,21 +113,25 @@ def _register_parquet_views(
                 "WHERE table_type = 'VIEW'"
             ).fetchall()
         }
-        expected = set(OPENWPM_TABLES + ['ads', 'http_requests_enriched'])
+        expected = set(OPENWPM_TABLES + ['ads'] + ENRICHED_TABLES)
         missing = expected - existing
         if missing:
             # Don't crash — some tables might legitimately be absent
             # (e.g., 'ads' before you've run ad ingestion). Just warn.
             print(f"⚠  Read-only connection: views not yet registered "
                   f"for {sorted(missing)}.")
-            if 'http_requests_enriched' in missing:
-                print(f"   Note: 'http_requests_enriched' requires running:")
+            
+            # Check if ANY enriched table is missing to avoid double-printing
+            if set(ENRICHED_TABLES) & missing:
+                print(f"   Note: Enriched tables require running:")
                 print(f"     python -m src.ingestion.enrich_parquet")
+
             print(f"   Run: python scripts/init_database.py")
+
         return
 
     # Write mode: register/refresh all available views.
-    for table in OPENWPM_TABLES + ['ads', 'http_requests_enriched']:
+    for table in OPENWPM_TABLES + ['ads'] + ENRICHED_TABLES:
         parquet_path = PARQUET_DIR / f"{table}.parquet"
         if parquet_path.exists():
             con.execute(f"""
@@ -144,7 +149,7 @@ def table_row_counts() -> dict[str, int]:
     """
     with db_session(read_only=True) as con:
         counts: dict[str, int] = {}
-        for table in OPENWPM_TABLES + ['ads', 'http_requests_enriched']:
+        for table in OPENWPM_TABLES + ['ads'] + ENRICHED_TABLES:
             try:
                 result = con.execute(
                     f"SELECT profile, COUNT(*) AS n FROM {table} GROUP BY profile"

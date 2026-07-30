@@ -179,7 +179,7 @@ python -m src.ingestion.load_sqlite
 #    with OCR text and advertiser network identification)
 python -m src.ingestion.load_ad_artifacts
 
-# 3. Create http_requests_enriched.parquet file using output_tree.csv. Adds
+# 3. Creates requested enriched parquet files using output_tree.csv. Adds
 #    subsidiary and parent entity columns, and relationship classification.
 python -m src.ingestion.enrich_parquet
 

@@ -8,9 +8,9 @@ Container:  Part of CSC Summer Research 2026 Project
             "Pervasive Online Third-Party Tracking: A Measurement Study"
             with Graham Fink, under Dr. Rebecca Drucker
 
-Goal:   Enriches crawl data in http_requests.parquet to add domain, entity, and
+Goal:   Enriches crawl data in TARGET parquet files to add domain, entity, and
         relationship classification columns, allowing for more accurate analysis
-        of third-party tracking. Output file http_requests_enriched.parquet will
+        of third-party tracking. Output files TARGET_enriched.parquet will
         be called by later scripts eg trackers.py. Uses domain-entity mapping tree
         and helper utility functions from openwpm-tracker-analysis module. Including
         this step in separate script allows for clean separation of classification
@@ -26,6 +26,24 @@ from types import SimpleNamespace
 from config import TREE_CSV_PATH, PARQUET_DIR
 from src.utils.domain_utils import load_tree, get_node_info, get_registered_domain, classify_relationship
 
+
+
+# Configuration for tables to be enriched
+# Update corresponding ENRICHED_TABLES in config.py
+ENRICHMENT_TARGETS = {
+    "http_requests": {
+        "input_file": "http_requests.parquet",
+        "output_file": "http_requests_enriched.parquet",
+        "domain_column": "url",
+        "context_column": "top_level_url"
+    },
+    "javascript_cookies": {
+        "input_file": "javascript_cookies.parquet",
+        "output_file": "javascript_cookies_enriched.parquet",
+        "domain_column": "host",
+        "context_column": None
+    }
+}
 
 
 def build_visit_map(site_visits_df: pd.DataFrame) -> dict[int, str]:
@@ -51,33 +69,46 @@ def build_visit_map(site_visits_df: pd.DataFrame) -> dict[int, str]:
     return visit_map
 
 
-def enrich_row(row: pd.Series, domain_to_node: dict, visit_map: dict) -> pd.Series:
+def enrich_row(
+    row: pd.Series, 
+    domain_to_node: dict, 
+    visit_map: dict, 
+    domain_column: str, 
+    context_column: str
+) -> pd.Series:
     """
-    Enriches a single HTTP request row with entity and relationship data.
+    Enriches a single row with entity and relationship data.
     
     Logic:
-    1. Extracts registered domain from request URL.
-    2. Extracts top-level domain from top_level_url with visit_map fallback.
-    3. Resolves both to entity nodes via the mapping tree.
+    1. Extracts registered domain from specified domain_column.
+    2. Extracts top-level domain from context_column with visit_map fallback.
+    3. Resolves both to entity nodes via mapping tree.
     4. Classifies relationship tier (First-party, Inter-family, or External).
 
     Args:
-        row: individual HTTP request DataFrame row
+        row: individual DataFrame row
         domain_to_node: mapping dictionary from load_tree() for easy lookup
         visit_map: site_visit dictionary for unknown domain fallback
+        domain_column: column name to use for request domain (e.g., 'url' or 'host')
+        context_column: column name to use for top-level context (e.g., 'top_level_url'),
+                        can be None if no context column exists for the table
 
     Returns:
-        pd.Series: enriched requests row with domain, subsidiary_entity,
-                parent_entity, and relationship_tier classification
+        pd.Series: Enriched row with domain, subsidiary_entity,
+                   parent_entity, and relationship_tier classification.
     """
     # --- 1. Resolve Request Domain ---
-    req_domain = get_registered_domain(row['url'])
+    # Use dynamic domain_column (e.g., 'url' for requests, 'host' for cookies)
+    req_domain = get_registered_domain(row[domain_column])
     
     # --- 2. Resolve Top-Level Domain (with fallback) ---
-    # Check top_level_url column first
-    req_top_domain = get_registered_domain(row['top_level_url'])
+    req_top_domain = None
     
-    # Fallback to visit_map if top_level_url is null or unresolvable
+    # Only attempt context_column resolution if it is provided and not null in row
+    if context_column and context_column in row and pd.notna(row[context_column]):
+        req_top_domain = get_registered_domain(row[context_column])
+    
+    # Fallback to visit_map if context_column is None (cookies) or extraction failed
     if not req_top_domain:
         req_top_domain = visit_map.get(row['visit_id'])
         
@@ -116,53 +147,77 @@ def enrich_row(row: pd.Series, domain_to_node: dict, visit_map: dict) -> pd.Seri
     })
 
 
+def enrich_table(target: dict, domain_to_node: dict, visit_map: dict) -> None:
+    """
+    Orchestrates the enrichment pipeline for a single target table.
+
+    Loads input parquet file, applies row-level enrichment via
+    enrich_row(), concatenates enriched columns to original DataFrame,
+    writes enriched output file, and prints per-table tier summary.
+
+    Args:
+        target: dict entry from ENRICHMENT_TARGETS containing input/output
+                paths and column mappings
+        domain_to_node: mapping dictionary from load_tree() for entity lookup
+        visit_map: site_visit dictionary for unknown domain fallback
+    """
+    # Step 1: Load target input file
+    input_path = PARQUET_DIR / target['input_file']
+    print(f"Loading {target['input_file']}...")
+    df = pd.read_parquet(input_path)
+
+    # Step 2: Apply row-level enrichment across all rows
+    print(f"Enriching {len(df):,} rows. This may take a moment...")
+    enrichment_results = df.apply(
+        lambda row: enrich_row(
+            row,
+            domain_to_node,
+            visit_map,
+            target['domain_column'],
+            target['context_column']
+        ),
+        axis=1
+    )
+
+    # Step 3: Concatenate enriched columns to original DataFrame
+    enriched_df = pd.concat([df, enrichment_results], axis=1)
+
+    # Step 4: Export enriched parquet
+    output_path = PARQUET_DIR / target['output_file']
+    print(f"Writing enriched file to {output_path}...")
+    enriched_df.to_parquet(output_path, index=False)
+
+    # Step 5: Final summary
+    tier_counts = enriched_df['relationship_tier'].value_counts()
+    print(f"\nEnrichment Summary — {target['input_file']}:")
+    for tier, count in tier_counts.items():
+        print(f" - {tier:25}: {count:>8,}")
+    return
+
+
 def main():
     """
     Main orchestration function for the enrichment pipeline.
     """
     print("─" * 60)
-    print("STARTING ENRICHMENT: http_requests_enriched.parquet")
+    print("STARTING ENRICHMENT PIPELINE")
     print("─" * 60)
     
     # Step 1: Load the Entity Tree
     print(f"Loading entity tree from {TREE_CSV_PATH.name}...")
     # load_tree returns (root, domain_to_node)
     _, domain_to_node = load_tree(str(TREE_CSV_PATH))
-    
-    # Step 2: Load Parquet Data
-    req_path = PARQUET_DIR / "http_requests.parquet"
+
+    # Step 2: Load site visits and build fallback visit map
     visit_path = PARQUET_DIR / "site_visits.parquet"
-    
-    print(f"Loading http requests: {req_path.name}")
-    http_df = pd.read_parquet(req_path)
-    
     print(f"Loading site visits: {visit_path.name}")
-    visits_df = pd.read_parquet(visit_path)
-    
-    # Step 3: Build Fallback Map
-    visit_map = build_visit_map(visits_df)
-    
-    # Step 4: Run Enrichment
-    print(f"Enriching {len(http_df):,} rows. This may take a moment...")
-    
-    # Use lambda to pass the dictionaries into the row-level function
-    enrichment_results = http_df.apply(
-        lambda row: enrich_row(row, domain_to_node, visit_map), 
-        axis=1
-    )
-    
-    # Concatenate the new columns to the original DataFrame
-    enriched_df = pd.concat([http_df, enrichment_results], axis=1)
-    
-    # Step 5: Export Enriched Parquet
-    print(f"Writing enriched file to {PARQUET_DIR / 'http_requests_enriched.parquet'}...")
-    enriched_df.to_parquet(PARQUET_DIR / 'http_requests_enriched.parquet', index=False)
-    
-    # Final Summary
-    tier_counts = enriched_df['relationship_tier'].value_counts()
-    print("\nEnrichment Summary:")
-    for tier, count in tier_counts.items():
-        print(f" - {tier:25}: {count:>8,}")
+    visit_map = build_visit_map(pd.read_parquet(visit_path))
+
+    # Step 3: Enrich each registered target table
+    for target_name, target_config in ENRICHMENT_TARGETS.items():
+        print("─" * 60)
+        print(f"STARTING ENRICHMENT: {target_name}")
+        enrich_table(target_config, domain_to_node, visit_map)
         
     print("─" * 60)
     print("ENRICHMENT COMPLETE")

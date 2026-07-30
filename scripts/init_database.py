@@ -21,6 +21,7 @@ from config import (
     DUCKDB_PATH,
     PARQUET_DIR,
     OPENWPM_TABLES,
+    ENRICHED_TABLES,
     DUCKDB_MEMORY_LIMIT,
     DUCKDB_THREADS,
 )
@@ -81,22 +82,24 @@ def init_database() -> None:
         registered += 1
 
     # ─────────────────────────────────────────────────────────────
-    # HTTP requests enriched (from http_requests_enriched.parquet)
+    # Register enriched parquet file views (from enrich_parquet.py)
     # ─────────────────────────────────────────────────────────────
-    http_enriched_path = PARQUET_DIR / "http_requests_enriched.parquet"
-    if http_enriched_path.exists():
+    print("\nRegistering enriched views:")
+    for table in ENRICHED_TABLES:
+        parquet_path = PARQUET_DIR / f"{table}.parquet"
+        if not parquet_path.exists():
+            print(f"  ⚠  {table}: parquet file not found — run enrich_parquet.py first:")
+            print( "       python -m src.ingestion.enrich_parquet")
+            continue
         con.execute(f"""
-            CREATE OR REPLACE VIEW http_requests_enriched AS
-            SELECT * FROM read_parquet('{http_enriched_path}')
+            CREATE OR REPLACE VIEW {table} AS
+            SELECT * FROM read_parquet('{parquet_path}')
         """)
         # Verify the view works by querying row count.
-        nn = con.execute("SELECT COUNT(*) FROM http_requests_enriched").fetchone()
+        nn = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
         n = nn[0] if nn else 0
-        print(f"  ✓ {'http_requests_enriched':25s} ({n:>10,} rows)")
+        print(f"  ✓ {table:25s} ({n:>10,} rows)")
         registered += 1
-    else:
-        print(f"  ⚠  {http_enriched_path.name} not found — run enrich_parquet.py first:")
-        print( "       python -m src.ingestion.enrich_parquet")
 
     # ─────────────────────────────────────────────────────────────
     # VLM ad descriptions and ads_enriched (from ads_desc.parquet)
