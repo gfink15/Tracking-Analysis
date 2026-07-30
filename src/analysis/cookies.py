@@ -44,43 +44,40 @@ RETARGETING_HOSTS = (
 # VOLUME METRICS
 # ─────────────────────────────────────────────────────────────────────
 def cookie_counts_by_profile() -> pd.DataFrame:
-    """Total cookies set per profile, broken down by first/third party.
+    """Total cookies set per profile, broken down by relationship tier.
 
-    First-party vs third-party is determined by comparing the cookie's
-    host to the visited site's host. A cookie set by `nytimes.com`
-    during a visit to `nytimes.com` is first-party; a cookie set by
-    `doubleclick.net` during the same visit is third-party.
+    Classifies cookies by relationship tier based on pre-computed entity
+    mappings in javascript_cookies_enriched: first-party (same parent and
+    subsidiary), inter-family third-party (same parent, different subsidiary),
+    and external third-party (different parent). Counts unique parent entities
+    setting cookies per profile.
 
-    Returns DataFrame: profile, n_total, n_first_party, n_third_party,
-                       n_unique_hosts, pct_third_party.
+    Returns DataFrame: profile, n_total, n_first_party,
+                       n_inter_family_third_party, n_external_third_party,
+                       n_unique_parent_entities, pct_third_party,
+                       pct_external_third_party.
     """
     with db_session(read_only=True) as con:
         df = con.execute("""
-            WITH joined AS (
-                SELECT
-                    c.profile,
-                    c.host                                       AS cookie_host,
-                    regexp_extract(v.site_url, '://([^/]+)', 1)  AS site_host,
-                    c.name,
-                    c.expiry
-                FROM javascript_cookies c
-                JOIN site_visits v USING (profile, visit_id)
-            )
             SELECT
                 profile,
                 COUNT(*)                                          AS n_total,
-                SUM(CASE WHEN cookie_host = site_host
-                         OR cookie_host LIKE '%.' || site_host
+                SUM(CASE WHEN relationship_tier = 'first-party'
                          THEN 1 ELSE 0 END)                       AS n_first_party,
-                SUM(CASE WHEN cookie_host != site_host
-                         AND cookie_host NOT LIKE '%.' || site_host
-                         THEN 1 ELSE 0 END)                       AS n_third_party,
-                COUNT(DISTINCT cookie_host)                       AS n_unique_hosts,
-                ROUND(100.0 * SUM(CASE WHEN cookie_host != site_host
-                                       AND cookie_host NOT LIKE '%.' || site_host
-                                       THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
-                      2)                                          AS pct_third_party
-            FROM joined
+                SUM(CASE WHEN relationship_tier = 'inter-family third-party'
+                         THEN 1 ELSE 0 END)                       AS n_inter_family_third_party,
+                SUM(CASE WHEN relationship_tier = 'external third-party'
+                         THEN 1 ELSE 0 END)                       AS n_external_third_party,
+                COUNT(DISTINCT parent_entity)                     AS n_unique_parent_entities,
+                ROUND(100.0 * (SUM(CASE WHEN relationship_tier IN ('inter-family third-party', 'external third-party')
+                                        THEN 1 ELSE 0 END) /
+                              NULLIF(COUNT(*), 0)),
+                      2)                                          AS pct_third_party,
+                ROUND(100.0 * (SUM(CASE WHEN relationship_tier = 'external third-party'
+                                        THEN 1 ELSE 0 END) /
+                              NULLIF(COUNT(*), 0)),
+                      2)                                          AS pct_external_third_party
+            FROM javascript_cookies_enriched
             GROUP BY profile
             ORDER BY profile
         """).df()
@@ -107,34 +104,29 @@ def cookie_lifespan_distribution(
         third_party_only: If True, restrict to third-party cookies
             (where retargeting actually happens).
     """
-    fp_filter = ""
+    tier_filter = ""
     if third_party_only:
-        fp_filter = """
-            AND cookie_host != site_host
-            AND cookie_host NOT LIKE '%.' || site_host
+        tier_filter = """
+            WHERE relationship_tier IN ('inter-family third-party', 'external third-party')
         """
-
     with db_session(read_only=True) as con:
         df = con.execute(f"""
-            WITH cookies_with_site AS (
+            WITH cookies_with_lifespan AS (
                 SELECT
-                    c.profile,
-                    c.host                                       AS cookie_host,
-                    regexp_extract(v.site_url, '://([^/]+)', 1)  AS site_host,
-                    c.expiry,
+                    profile,
+                    expiry,
                     -- expiry is epoch seconds; visits are in same units.
                     -- Lifespan in days = (expiry - time_stamp) / 86400.
                     -- Session cookies have expiry IS NULL or = 0.
                     CASE
-                        WHEN c.expiry IS NULL OR c.is_session = 1 THEN -1
+                        WHEN expiry IS NULL OR is_session = 1 THEN -1
                         ELSE (
-                            EXTRACT(EPOCH FROM c.expiry)
-                            - EXTRACT(EPOCH FROM c.time_stamp)
+                            EXTRACT(EPOCH FROM expiry)
+                            - EXTRACT(EPOCH FROM time_stamp)
                         ) / 86400.0
                     END AS lifespan_days
-                FROM javascript_cookies c
-                JOIN site_visits v USING (profile, visit_id)
-                WHERE 1=1 {fp_filter}
+                FROM javascript_cookies_enriched
+                {tier_filter}
             )
             SELECT
                 profile,
@@ -147,7 +139,7 @@ def cookie_lifespan_distribution(
                     ELSE                          '1y+'
                 END                                              AS lifespan_bucket,
                 COUNT(*)                                         AS n_cookies
-            FROM cookies_with_site
+            FROM cookies_with_lifespan
             GROUP BY profile, lifespan_bucket
             ORDER BY profile,
                 CASE lifespan_bucket

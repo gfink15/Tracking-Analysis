@@ -52,11 +52,13 @@ def plot_first_vs_third_party(
     title: str = 'Cookies set by profile (first vs third party)',
     save_path: Optional[Path | str] = None,
 ) -> Figure:
-    """Stacked bar of first-party vs third-party cookie counts per profile.
+    """Stacked bar of first-party vs inter-family vs external third-party
+    cookie counts per profile.
 
     Args:
         df: DataFrame from cookie_counts_by_profile() with columns
-            'profile', 'n_first_party', 'n_third_party'.
+            'profile', 'n_first_party', 'n_inter_family_third_party',
+            'n_external_third_party'.
 
     The stacked-bar form lets readers see BOTH the absolute volume
     (total bar height) AND the composition (first vs third split).
@@ -77,24 +79,37 @@ def plot_first_vs_third_party(
         width, label='First-party',
         color='#7F8C8D', edgecolor='black', linewidth=0.5,
     )
-    # Third-party stacked on top
-    bars_tp = ax.bar(
-        x, df_sorted['n_third_party'],
+    # Inter-family third-party stacked on top of first-party
+    bars_iftp = ax.bar(
+        x, df_sorted['n_inter_family_third_party'],
         width, bottom=df_sorted['n_first_party'],
-        label='Third-party',
+        label='Inter-family third-party',
+        color='#E67E22', edgecolor='black', linewidth=0.5,
+    )
+    # External third-party stacked on top of inter-family
+    bars_etp = ax.bar(
+        x, df_sorted['n_external_third_party'],
+        width, bottom=df_sorted['n_first_party'] + df_sorted['n_inter_family_third_party'],
+        label='External third-party',
         color='#E74C3C', edgecolor='black', linewidth=0.5,
     )
 
     # Annotate each segment with its count
-    for i, (fp, tp) in enumerate(zip(
-        df_sorted['n_first_party'], df_sorted['n_third_party']
+    for i, (fp, iftp, etp) in enumerate(zip(
+        df_sorted['n_first_party'],
+        df_sorted['n_inter_family_third_party'],
+        df_sorted['n_external_third_party'],
     )):
         if fp > 0:
             ax.text(i, fp / 2, f'{fp:,}',
                     ha='center', va='center',
                     color='white', fontsize=10, fontweight='bold')
-        if tp > 0:
-            ax.text(i, fp + tp / 2, f'{tp:,}',
+        if iftp > 0:
+            ax.text(i, fp + iftp / 2, f'{iftp:,}',
+                    ha='center', va='center',
+                    color='white', fontsize=10, fontweight='bold')
+        if etp > 0:
+            ax.text(i, fp + iftp + etp / 2, f'{etp:,}',
                     ha='center', va='center',
                     color='white', fontsize=10, fontweight='bold')
 
