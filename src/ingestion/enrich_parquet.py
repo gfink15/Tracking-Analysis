@@ -32,7 +32,7 @@ from src.utils.domain_utils import load_tree, get_node_info, get_registered_doma
 
 
 # Configuration for tables to be enriched
-# Update corresponding ENRICHED_TABLES in config.py
+# Update corresponding constant ENRICHED_TABLES in config.py
 ENRICHMENT_TARGETS = {
     "http_requests": {
         "input_file": "http_requests.parquet",
@@ -45,6 +45,12 @@ ENRICHMENT_TARGETS = {
         "output_file": "javascript_cookies_enriched.parquet",
         "domain_column": "host",
         "context_column": None
+    },
+    "javascript": {
+        "input_file": "javascript.parquet",
+        "output_file": "javascript_enriched.parquet",
+        "domain_column": "script_url",
+        "context_column": "top_level_url"
     }
 }
 

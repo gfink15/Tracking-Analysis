@@ -7,6 +7,22 @@ cookies, more cookie-sync events, and more cookies from retargeting
 networks such as Criteo or AdRoll.
 
 This module provides functions that quantify each of these.
+
+REFACTOR LOG: Anya Barringer, Summer 2026
+    - Source table: javascript_cookies -> javascript_cookies_enriched (per enrich_parquet.py)
+    - Domain extraction + entity aggregation: precomputed domain, subsidiary_entity,
+        parent_entity columns; most common replacement of host -> parent_entity
+    - First-party filter: add "WHERE relationship_tier  IN ('inter-family third-party',
+        'external third-party')" to remove first-party cookies and unknown (unresolvable
+        domain) cookies (relationship_tier column from classify_relationships())
+    - Cookie retargeting: replaced RETARGETING_HOSTS list of domains with
+        RETARGETING_PARENTS list of parent entities; kept same domains in previous list
+        but now mapped to parent_entity for more comprehensive analysis; also added several
+        entities. Note that primary evidence for retargeting is known retargeting host name,
+        often supported by the sheer number of cookie events
+    - Cookie syncing: now depends on mapped parent_entity instead of simple host;
+        chose highest level of granularity as syncing is by definition sharing
+        cookies between two different corporate tracker entities
 """
 from __future__ import annotations
 

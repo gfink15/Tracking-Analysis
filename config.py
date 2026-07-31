@@ -109,7 +109,8 @@ OPENWPM_TABLES = [
 # Update corresponding constant ENRICHMENT_TARGETS in enrich_parquet.py.
 ENRICHED_TABLES = [
     'http_requests_enriched',       # outgoing network requests
-    'javascript_cookies_enriched'   # cookies set/read via document.cookie
+    'javascript_cookies_enriched',  # cookies set/read via document.cookie
+    'javascript_enriched',          # instrumented JS API calls (fingerprinting)
 ]
 
 # ─────────────────────────────────────────────────────────────────────
