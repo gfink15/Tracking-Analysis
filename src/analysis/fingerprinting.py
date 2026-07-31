@@ -124,6 +124,33 @@ def _symbols_in_clause(symbols: tuple[str, ...]) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────
+# GRANULARITY FLAGS
+# ─────────────────────────────────────────────────────────────────────
+# Valid granularity levels for entity-aware aggregation.
+# Matches column names in enriched tables (eg javascript_enriched).
+VALID_GRANULARITIES = ("domain", "subsidiary_entity", "parent_entity")
+
+def validate_granularity(granularity: str) -> None:
+    """Validate that requested granularity level is known enriched column.
+
+    Called at top of any function that accepts granularity parameter
+    before value is injected into f-string SQL query. Raises early
+    to prevent silent SQL errors or unintended column references.
+
+    Args:
+        granularity: granularity string to validate
+
+    Raises:
+        ValueError: if granularity is not in VALID_GRANULARITIES
+    """
+    if granularity not in VALID_GRANULARITIES:
+        raise ValueError(
+            f"Invalid granularity '{granularity}'. "
+            f"Must be one of {sorted(VALID_GRANULARITIES)}."
+        )
+    
+
+# ─────────────────────────────────────────────────────────────────────
 # RAW API CALL COUNTS
 # ─────────────────────────────────────────────────────────────────────
 def fingerprinting_api_calls() -> pd.DataFrame:
@@ -164,7 +191,10 @@ def fingerprinting_api_calls() -> pd.DataFrame:
 # methodology requires that a SCRIPT exhibits multiple behaviors
 # characteristic of fingerprinting before being flagged.
 
-def detect_canvas_fingerprinters(min_text_calls: int = 1) -> pd.DataFrame:
+def detect_canvas_fingerprinters(
+    min_text_calls: int = 1,
+    granularity: str = "parent_entity"
+) -> pd.DataFrame:
     """Detect scripts performing canvas fingerprinting.
 
     Englehardt & Narayanan criteria for canvas fingerprinting:
@@ -173,14 +203,30 @@ def detect_canvas_fingerprinters(min_text_calls: int = 1) -> pd.DataFrame:
       3. (Optional) Script does NOT call save/restore (legitimate
          drawing usually saves state; fingerprinters skip this)
 
-    Returns: profile, script_url, n_text_calls, n_read_calls, n_visits.
+    Granularity column (default: parent_entity) is retrieved as
+    label on each script_url row for downstream aggregation; it
+    does not interfere with grouping or visit counts at this stage.
+
+    Args:
+        min_text_calls: minimum number of text-write API calls required
+            per visit for script to be considered fingerprinter, default 1
+        granularity: column name representing entity resolution level
+            to retrieve alongside script_url. Must be one of 'domain',
+            'subsidiary_entity', or 'parent_entity'. Default 'parent_entity'
+
+    Returns:
+        pd.DataFrame with columns: profile, script_url, {granularity},
+        n_text_calls, n_read_calls, n_visits.
     """
+    validate_granularity(granularity)
+
     with db_session(read_only=True) as con:
         df = con.execute(f"""
             WITH per_script AS (
                 SELECT
                     profile,
                     script_url,
+                    {granularity},
                     visit_id,
                     SUM(CASE WHEN symbol IN
                         ('CanvasRenderingContext2D.fillText',
@@ -190,46 +236,64 @@ def detect_canvas_fingerprinters(min_text_calls: int = 1) -> pd.DataFrame:
                         ('HTMLCanvasElement.toDataURL',
                          'CanvasRenderingContext2D.getImageData')
                         THEN 1 ELSE 0 END) AS n_read_calls
-                FROM javascript
+                FROM javascript_enriched
                 WHERE symbol IN
                     ('CanvasRenderingContext2D.fillText',
                      'CanvasRenderingContext2D.strokeText',
                      'HTMLCanvasElement.toDataURL',
                      'CanvasRenderingContext2D.getImageData')
-                GROUP BY profile, script_url, visit_id
+                  AND relationship_tier IN ('external third-party', 'inter-family third-party')
+                GROUP BY profile, script_url, {granularity}, visit_id
             )
             SELECT
                 profile,
                 script_url,
-                SUM(n_text_calls)         AS n_text_calls,
-                SUM(n_read_calls)         AS n_read_calls,
-                COUNT(DISTINCT visit_id)  AS n_visits
+                {granularity},
+                SUM(n_text_calls)        AS n_text_calls,
+                SUM(n_read_calls)        AS n_read_calls,
+                COUNT(DISTINCT visit_id) AS n_visits
             FROM per_script
             WHERE n_text_calls >= {min_text_calls}
               AND n_read_calls >= 1
-            GROUP BY profile, script_url
+            GROUP BY profile, script_url, {granularity}
             ORDER BY n_visits DESC, n_read_calls DESC
         """).df()
     return df
 
 
-def detect_audio_fingerprinters() -> pd.DataFrame:
+def detect_audio_fingerprinters(
+    granularity: str = "parent_entity"
+) -> pd.DataFrame:
     """Detect scripts performing audio fingerprinting.
 
-    Criteria: script creates an oscillator/compressor AND reads
+    Criteria: script creates oscillator/compressor AND reads
     channel data. Audio fingerprinting is rarer than canvas but
-    when present is almost never a false positive — legitimate
+    when present is almost never false positive — legitimate
     audio code is very rarely AnalyserNode+createOscillator+
     getChannelData in one script.
 
-    Returns: profile, script_url, n_visits.
+    Granularity column (default: parent_entity) is retrieved as
+    label on each script_url row for downstream aggregation; it
+    does not interfere with grouping or visit counts at this stage.
+
+    Args:
+        granularity: column name representing entity resolution level
+            to retrieve alongside script_url. Must be one of 'domain',
+            'subsidiary_entity', or 'parent_entity'. Default 'parent_entity'
+
+    Returns:
+        pd.DataFrame with columns: profile, script_url, {granularity},
+        n_visits.
     """
+    validate_granularity(granularity)
+
     with db_session(read_only=True) as con:
-        df = con.execute("""
+        df = con.execute(f"""
             WITH per_script AS (
                 SELECT
                     profile,
                     script_url,
+                    {granularity},
                     visit_id,
                     SUM(CASE WHEN symbol IN
                         ('AudioContext.createOscillator',
@@ -238,27 +302,32 @@ def detect_audio_fingerprinters() -> pd.DataFrame:
                         THEN 1 ELSE 0 END) AS n_setup,
                     SUM(CASE WHEN symbol = 'AudioBuffer.getChannelData'
                         THEN 1 ELSE 0 END) AS n_read
-                FROM javascript
+                FROM javascript_enriched
                 WHERE symbol IN
                     ('AudioContext.createOscillator',
                      'AudioContext.createDynamicsCompressor',
                      'OfflineAudioContext.startRendering',
                      'AudioBuffer.getChannelData')
-                GROUP BY profile, script_url, visit_id
+                  AND relationship_tier IN ('external third-party', 'inter-family third-party')
+                GROUP BY profile, script_url, {granularity}, visit_id
             )
             SELECT
                 profile,
                 script_url,
+                {granularity},
                 COUNT(DISTINCT visit_id) AS n_visits
             FROM per_script
             WHERE n_setup >= 1 AND n_read >= 1
-            GROUP BY profile, script_url
+            GROUP BY profile, script_url, {granularity}
             ORDER BY n_visits DESC
         """).df()
     return df
 
 
-def detect_navigator_probers(min_attributes: int = 5) -> pd.DataFrame:
+def detect_navigator_probers(
+    min_attributes: int = 5,
+    granularity: str = "parent_entity"
+) -> pd.DataFrame:
     """Detect scripts that read many navigator/screen attributes.
 
     A page's analytics code might read 1-2 navigator properties.
@@ -266,13 +335,43 @@ def detect_navigator_probers(min_attributes: int = 5) -> pd.DataFrame:
     counts the number of DISTINCT navigator/screen attributes each
     script accesses per visit, flagging those above a threshold.
 
+    Granularity column (default: parent_entity) is retrieved as a
+    label on each script_url row for downstream aggregation; it
+    does not interfere with grouping or visit counts at this stage.
+
     Args:
         min_attributes: Minimum distinct attributes for the script
             to be flagged. Default 5 catches most fingerprinters
             with low false-positive rate.
+        granularity: column name representing entity resolution level
+            to retrieve alongside script_url. Must be one of 'domain',
+            'subsidiary_entity', or 'parent_entity'. Default 'parent_entity'.
 
-    Returns: profile, script_url, n_attributes_read, attributes_list.
+    Returns:
+        pd.DataFrame with columns: profile, script_url, {granularity},
+        n_attributes_read, attributes_list, n_visits.
     """
+    validate_granularity(granularity)
+
+    all_symbols = NAVIGATOR_SYMBOLS + SCREEN_SYMBOLS
+
+    with db_session(read_only=True) as con:
+        df = con.execute(f"""
+            SELECT
+                profile,
+                script_url,
+                {granularity},
+                COUNT(DISTINCT symbol)            AS n_attributes_read,
+                string_agg(DISTINCT symbol, ', ') AS attributes_list,
+                COUNT(DISTINCT visit_id)          AS n_visits
+            FROM javascript_enriched
+            WHERE symbol IN {_symbols_in_clause(all_symbols)}
+              AND relationship_tier IN ('external third-party', 'inter-family third-party')
+            GROUP BY profile, script_url, {granularity}
+            HAVING COUNT(DISTINCT symbol) >= {min_attributes}
+            ORDER BY n_attributes_read DESC, n_visits DESC
+        """).df()
+    return df
     all_symbols = NAVIGATOR_SYMBOLS + SCREEN_SYMBOLS
     with db_session(read_only=True) as con:
         df = con.execute(f"""
