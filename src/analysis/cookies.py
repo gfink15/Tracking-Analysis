@@ -23,20 +23,26 @@ from config import PROFILES
 from src.utils.db import db_session
 
 
-# Retargeting/behavioral-ad cookie hosts. These networks specifically
+# Retargeting/behavioral-ad parent entities. These networks specifically
 # build profiles from browsing history. Presence of their cookies in
 # a seeded profile is strong evidence of behavioral profiling.
-RETARGETING_HOSTS = (
-    'criteo.com', 'criteo.net',
-    'adroll.com', 'adrolls.com',
-    'rlcdn.com',            # Rakuten retargeting
-    'doubleclick.net',      # Google retargeting
-    'taboola.com', 'outbrain.com',
-    'adnxs.com',            # AppNexus (now Xandr)
-    'casalemedia.com',
-    'rubiconproject.com',
-    'pubmatic.com',
-    'bidswitch.net',
+RETARGETING_PARENTS = (
+    'criteo',               # criteo.com, criteo.net, bidswitch.net
+    'nextroll',             # adroll.com, adrolls.com
+    'liveramp',             # rlcdn.com
+    'google',               # doubleclick.net, googleadservices.com
+    'taboola',              # taboola.com
+    'teads',                # outbrain.com
+    'microsoft',            # adnxs.com
+    'indexexchange',        # casalemedia.com
+    'magnite',              # rubiconproject.com
+    'pubmatic',             # pubmatic.com
+    'meta',                 # fbcdn.net, fbsbx.com, facebook.com
+    'the trade desk',       # adsrvr.org
+    'rtbhouse',             # creativecdn.com, rtbhouse.com
+    'quantcast',            # quantserve.com
+    'amazon',               # amazon-adsystem.com
+    'yahoo',                # yahoodsp.com, advertising.com - CHECK MAPPING W/ VERIZON
 )
 
 
@@ -159,44 +165,43 @@ def retargeting_cookie_presence() -> pd.DataFrame:
 
     This is one of the most direct measurements of behavioral
     targeting: each row is a (profile, retargeter) pair with the
-    number of cookies set and unique visits affected.
+    number of cookies recorded and unique visits affected.
 
     A profile-to-baseline delta here is the cleanest evidence you'll
     get that history seeding triggered behavioral profiling.
     """
-    # Build the SQL IN list once. We use LIKE rather than = because
-    # retargeters often use multiple subdomains (ads.doubleclick.net,
-    # stats.g.doubleclick.net, etc.) and we want to catch all of them.
-    where_clauses = " OR ".join(
-        f"c.host LIKE '%{h}%'" for h in RETARGETING_HOSTS
-    )
+    # Build the SQL IN list from RETARGETING_PARENTS for the CASE expression.
+    # Single-quoted, comma-separated for injection into SQL IN (...).
+    parents_sql = ", ".join(f"'{p}'" for p in RETARGETING_PARENTS)
 
     with db_session(read_only=True) as con:
         df = con.execute(f"""
             WITH normalized AS (
                 SELECT
-                    c.profile,
-                    c.visit_id,
-                    -- Map any matching subdomain back to the canonical retargeter
+                    profile,
+                    visit_id,
+                    -- Label cookie with its parent entity if it is 
+                    -- known retargeter, otherwise 'other'. Compares 
+                    -- direct equality between column and list.
                     CASE
-                        {' '.join(
-                            f"WHEN c.host LIKE '%{h}%' THEN '{h}'"
-                            for h in RETARGETING_HOSTS
-                        )}
+                        WHEN parent_entity IN ({parents_sql}) THEN parent_entity
                         ELSE 'other'
                     END AS retargeter
-                FROM javascript_cookies c
-                WHERE {where_clauses}
+                FROM javascript_cookies_enriched
+                WHERE relationship_tier IN (
+                    'inter-family third-party',
+                    'external third-party'
+                )
             )
             SELECT
                 profile,
                 retargeter,
-                COUNT(*)                       AS n_cookies,
+                COUNT(*)                       AS n_cookie_events,
                 COUNT(DISTINCT visit_id)       AS n_visits_affected
             FROM normalized
             WHERE retargeter != 'other'
             GROUP BY profile, retargeter
-            ORDER BY profile, n_cookies DESC
+            ORDER BY profile, n_cookie_events DESC
         """).df()
     return df
 
@@ -206,7 +211,7 @@ def retargeting_cookie_presence() -> pd.DataFrame:
 # ─────────────────────────────────────────────────────────────────────
 def detect_cookie_syncs(min_id_length: int = 10) -> pd.DataFrame:
     """Identify probable cookie-sync events: same ID appearing in
-    cookies from different hosts within the same visit.
+    cookies from different parent entities within the same visit.
 
     Cookie syncing is the practice where two trackers exchange their
     user IDs so they can merge their profiles. It's the mechanism
@@ -214,9 +219,9 @@ def detect_cookie_syncs(min_id_length: int = 10) -> pd.DataFrame:
     different tracking companies are involved.
 
     This function uses a heuristic: long alphanumeric cookie values
-    that appear in cookies from ≥2 different hosts during the same
-    visit are probable sync events. False positives are possible
-    (shared session tokens, common defaults) so always inspect
+    that appear in cookies from ≥2 different parent entities during
+    the same visit are probable sync events. False positives are
+    possible (shared session tokens, common defaults) so always inspect
     results before drawing conclusions.
 
     Args:
@@ -224,7 +229,7 @@ def detect_cookie_syncs(min_id_length: int = 10) -> pd.DataFrame:
             ID candidate. Below ~10 chars, false positive rate is
             unacceptable (boolean flags, version numbers, etc.).
 
-    Returns: profile, visit_id, shared_value, n_hosts, hosts.
+    Returns: profile, visit_id, shared_value, n_parents, parents.
     """
     with db_session(read_only=True) as con:
         df = con.execute(f"""
@@ -232,27 +237,31 @@ def detect_cookie_syncs(min_id_length: int = 10) -> pd.DataFrame:
                 SELECT
                     profile,
                     visit_id,
-                    host,
+                    parent_entity,
                     value
-                FROM javascript_cookies
+                FROM javascript_cookies_enriched
                 WHERE LENGTH(value) >= {min_id_length}
                   -- Heuristic: ID-like values are mostly alphanumeric
                   AND regexp_matches(value, '^[a-zA-Z0-9_.-]+$')
+                  AND relationship_tier IN (
+                      'inter-family third-party',
+                      'external third-party'
+                  )
             ),
             shared AS (
                 SELECT
                     profile,
                     visit_id,
-                    value AS shared_value,
-                    COUNT(DISTINCT host) AS n_hosts,
-                    string_agg(DISTINCT host, ', ') AS hosts
+                    value                              AS shared_value,
+                    COUNT(DISTINCT parent_entity)      AS n_parents,
+                    string_agg(DISTINCT parent_entity, ', ') AS parents
                 FROM long_values
                 GROUP BY profile, visit_id, value
-                HAVING COUNT(DISTINCT host) >= 2
+                HAVING COUNT(DISTINCT parent_entity) >= 2
             )
             SELECT *
             FROM shared
-            ORDER BY profile, n_hosts DESC
+            ORDER BY profile, n_parents DESC
         """).df()
     return df
 
@@ -265,12 +274,12 @@ def cookie_sync_summary() -> pd.DataFrame:
             'profile': PROFILES,
             'n_sync_events': [0] * len(PROFILES),
             'n_visits_with_syncs': [0] * len(PROFILES),
-            'avg_hosts_per_sync': [0.0] * len(PROFILES),
+            'avg_parents_per_sync': [0.0] * len(PROFILES),
         })
     return (syncs.groupby('profile')
                  .agg(n_sync_events=('shared_value', 'count'),
                       n_visits_with_syncs=('visit_id', 'nunique'),
-                      avg_hosts_per_sync=('n_hosts', 'mean'))
+                      avg_parents_per_sync=('n_parents', 'mean'))
                  .round(2)
                  .reset_index())
 

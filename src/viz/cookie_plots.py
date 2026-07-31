@@ -198,20 +198,20 @@ def plot_lifespan_distribution(
 # ─────────────────────────────────────────────────────────────────────
 def plot_retargeting_presence(
     df: pd.DataFrame,
-    metric: str = 'n_cookies',
+    metric: str = 'n_cookie_events',
     title: Optional[str] = None,
     save_path: Optional[Path | str] = None,
 ) -> Figure:
-    """Grouped bar chart: retargeting networks × profiles.
+    """Grouped bar chart: retargeting networks x profiles.
 
     Args:
         df: DataFrame from retargeting_cookie_presence() with columns
-            'profile', 'retargeter', 'n_cookies', 'n_visits_affected'.
-        metric: Which column to plot — 'n_cookies' (volume) or
+            'profile', 'retargeter', 'n_cookie_events', 'n_visits_affected'.
+        metric: Which column to plot — 'n_cookie_events' (volume) or
             'n_visits_affected' (reach).
 
     This figure is often the most striking in a tracking study: if
-    one profile shows 5-10× more Criteo cookies than another, the
+    one profile shows 5-10x more Criteo cookies than another, the
     figure makes that obvious at a glance.
     """
     apply_style()
@@ -238,7 +238,7 @@ def plot_retargeting_presence(
 
     ax.set_yticks(y)
     ax.set_yticklabels(pivot.index)
-    ax.set_xlabel('Number of cookies' if metric == 'n_cookies'
+    ax.set_xlabel('Number of cookie events' if metric == 'n_cookie_events'
                   else 'Visits affected')
     ax.set_title(title or f'Retargeting network presence ({metric})')
     ax.legend(loc='lower right')
@@ -260,7 +260,7 @@ def plot_sync_summary(
     Args:
         df: DataFrame from cookie_sync_summary() with columns
             'profile', 'n_sync_events', 'n_visits_with_syncs',
-            'avg_hosts_per_sync'.
+            'avg_parents_per_sync'.
 
     Two side-by-side bars per profile: total events and visits
     affected. The ratio between them is also informative
