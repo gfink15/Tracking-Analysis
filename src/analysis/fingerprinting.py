@@ -144,7 +144,7 @@ def fingerprinting_api_calls() -> pd.DataFrame:
             '{technique}' AS technique,
             symbol,
             COUNT(*) AS n_calls
-        FROM javascript
+        FROM javascript_enriched
         WHERE symbol IN {_symbols_in_clause(symbols)}
         GROUP BY profile, symbol
         """
@@ -176,7 +176,7 @@ def detect_canvas_fingerprinters(min_text_calls: int = 1) -> pd.DataFrame:
     Returns: profile, script_url, n_text_calls, n_read_calls, n_visits.
     """
     with db_session(read_only=True) as con:
-        return con.execute(f"""
+        df = con.execute(f"""
             WITH per_script AS (
                 SELECT
                     profile,
@@ -210,6 +210,7 @@ def detect_canvas_fingerprinters(min_text_calls: int = 1) -> pd.DataFrame:
             GROUP BY profile, script_url
             ORDER BY n_visits DESC, n_read_calls DESC
         """).df()
+    return df
 
 
 def detect_audio_fingerprinters() -> pd.DataFrame:
@@ -224,7 +225,7 @@ def detect_audio_fingerprinters() -> pd.DataFrame:
     Returns: profile, script_url, n_visits.
     """
     with db_session(read_only=True) as con:
-        return con.execute("""
+        df = con.execute("""
             WITH per_script AS (
                 SELECT
                     profile,
@@ -254,6 +255,7 @@ def detect_audio_fingerprinters() -> pd.DataFrame:
             GROUP BY profile, script_url
             ORDER BY n_visits DESC
         """).df()
+    return df
 
 
 def detect_navigator_probers(min_attributes: int = 5) -> pd.DataFrame:
@@ -273,7 +275,7 @@ def detect_navigator_probers(min_attributes: int = 5) -> pd.DataFrame:
     """
     all_symbols = NAVIGATOR_SYMBOLS + SCREEN_SYMBOLS
     with db_session(read_only=True) as con:
-        return con.execute(f"""
+        df = con.execute(f"""
             SELECT
                 profile,
                 script_url,
@@ -286,6 +288,7 @@ def detect_navigator_probers(min_attributes: int = 5) -> pd.DataFrame:
             HAVING COUNT(DISTINCT symbol) >= {min_attributes}
             ORDER BY n_attributes_read DESC, n_visits DESC
         """).df()
+    return df
 
 
 # ─────────────────────────────────────────────────────────────────────
