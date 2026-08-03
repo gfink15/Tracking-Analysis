@@ -78,7 +78,7 @@ BATCH_SIZE = 25
 # Root containing per-profile ad PNGs. Adjust if config.py names it differently.
 IMAGE_ROOT = Path(getattr(config, "DATA_DIR", "data"))
 
-CATEGORIES = [c.value for c in config.Categories]
+CATEGORIES = [str(c.value) for c in config.Categories]
 
 VLM_PROMPT = f"""You are analyzing an image that may or may not contain an 
 advertisement, captured during a web privacy study.

@@ -48,10 +48,10 @@ create_ads_with_pixel_context(con, min_confidence=0.7)
 # 5. Register your persona-affinity map (from your VLM category list)
 
 PERSONA_AFFINITY = {
-    "gaming":           [c.Electronics.name, c.Entertainment.name, c.Gaming.name, c.Technology.name, c.Retail.name, c.Software.name, c.Crypto.name, c.Privacy.name, c.Stream.name, c.Hobbies.name, c.Events.name],
-    "sports_car_fan":   [c.Auto.name, c.Construction.name, c.Transport.name, c.Hobbies.name],
-    "investor":         [c.Finance.name, c.Business.name, c.Career.name, c.Charity.name, c.Crypto.name, c.Estate.name, c.Insurance.name, c.Legal.name],
-    "retiree":          [c.Entertainment.name, c.Beauty.name, c.Govt.name, c.Legal.name, c.Estate.name, c.Travel.name, c.Family.name, c.Healthcare.name, c.Events.name],
+    "gaming":           [str(c.Electronics.value), str(c.Entertainment.value), str(c.Gaming.value), str(c.Technology.value), str(c.Retail.value), str(c.Software.value), str(c.Crypto.value), str(c.Privacy.value), str(c.Stream.value), str(c.Hobbies.value), str(c.Events.value)],
+    "sports_car_fan":   [str(c.Auto.value), str(c.Construction.value), str(c.Transport.value), str(c.Hobbies.value)],
+    "investor":         [str(c.Finance.value), str(c.Business.value), str(c.Career.value), str(c.Charity.value), str(c.Crypto.value), str(c.Estate.value), str(c.Insurance.value), str(c.Legal.value)],
+    "retiree":          [str(c.Entertainment.value), str(c.Beauty.value), str(c.Govt.value), str(c.Legal.value), str(c.Estate.value), str(c.Travel.value), str(c.Family.value), str(c.Healthcare.value), str(c.Events.value)],
     "control":  [],  # baseline — no expected affinity
     # ... fill in from your VLM category list
 }
