@@ -380,6 +380,8 @@ def run_clip_pipeline(
     output_parquet: Path = ADS_CLIP_PARQUET,
     image_root: Path = IMAGE_ROOT,
     resume: bool = True,
+    divided: Optional[bool] = False,
+    divided_indices: Optional[set[int]] = None
 ) -> pd.DataFrame:
     """
     Main entry point. Loads ads.parquet, classifies each image, writes
@@ -396,6 +398,11 @@ def run_clip_pipeline(
 
     log.info("Loading %s", input_parquet)
     ads = pd.read_parquet(input_parquet)
+
+    if divided and divided_indices:
+        print("Divided Workload Mode Activated")
+        processed_indices = processed_indices | divided_indices
+
     to_process = ads[~ads['index'].isin(processed_indices)]
     log.info("Loaded %d ad records", len(to_process))
 
@@ -585,9 +592,15 @@ def main():
                         help="Classify only first N ads (smoke test)")
     args = parser.parse_args()
 
+    # Testing purposes - find length of table
+    # ads = pd.read_parquet(ADS_PARQUET)
+    # print(ads['index'])
+
     run_clip_pipeline(
         limit=args.limit,
-        single_ad=args.s
+        single_ad=args.s,
+        divided=True,
+        divided_indices=set(range(0,1180))
     )
 
 

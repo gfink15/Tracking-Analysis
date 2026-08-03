@@ -28,8 +28,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from config import TREE_CSV_PATH, PARQUET_DIR
 from src.utils.domain_utils import load_tree, get_node_info, get_registered_domain, classify_relationship
+import pyarrow.parquet as pq
+import pyarrow as pa
 
 
+BATCH_SIZE = 50_000
 
 # Configuration for tables to be enriched
 # Update corresponding constant ENRICHED_TABLES in config.py
@@ -46,12 +49,12 @@ ENRICHMENT_TARGETS = {
         "domain_column": "host",
         "context_column": None
     },
-    "javascript": {
-        "input_file": "javascript.parquet",
-        "output_file": "javascript_enriched.parquet",
-        "domain_column": "script_url",
-        "context_column": "top_level_url"
-    }
+    # "javascript": {
+    #     "input_file": "javascript.parquet",
+    #     "output_file": "javascript_enriched.parquet",
+    #     "domain_column": "script_url",
+    #     "context_column": "top_level_url"
+    # }
 }
 
 
@@ -156,52 +159,65 @@ def enrich_row(
     })
 
 
-def enrich_table(target: dict, domain_to_node: dict, visit_map: dict) -> None:
-    """
-    Orchestrates the enrichment pipeline for a single target table.
-
-    Loads input parquet file, applies row-level enrichment via
-    enrich_row(), concatenates enriched columns to original DataFrame,
-    writes enriched output file, and prints per-table tier summary.
-
-    Args:
-        target: dict entry from ENRICHMENT_TARGETS containing input/output
-                paths and column mappings
-        domain_to_node: mapping dictionary from load_tree() for entity lookup
-        visit_map: site_visit dictionary for unknown domain fallback
-    """
-    # Step 1: Load target input file
+def enrich_table(target, domain_to_node, visit_map):
     input_path = PARQUET_DIR / target['input_file']
-    print(f"Loading {target['input_file']}...")
-    df = pd.read_parquet(input_path)
-
-    # Step 2: Apply row-level enrichment across all rows
-    print(f"Enriching {len(df):,} rows. This may take a moment...")
-    enrichment_results = df.apply(
-        lambda row: enrich_row(
-            row,
-            domain_to_node,
-            visit_map,
-            target['domain_column'],
-            target['context_column']
-        ),
-        axis=1
-    )
-
-    # Step 3: Concatenate enriched columns to original DataFrame
-    enriched_df = pd.concat([df, enrichment_results], axis=1)
-
-    # Step 4: Export enriched parquet
     output_path = PARQUET_DIR / target['output_file']
-    print(f"Writing enriched file to {output_path}...")
-    enriched_df.to_parquet(output_path, index=False)
-
-    # Step 5: Final summary
-    tier_counts = enriched_df['relationship_tier'].value_counts()
+    
+    parquet_file = pq.ParquetFile(input_path)
+    total_rows = parquet_file.metadata.num_rows
+    print(f"Total rows to enrich: {total_rows:,}")
+    
+    # Build the target schema from the input schema + enrichment columns
+    input_schema = parquet_file.schema_arrow
+    enrichment_fields = [
+        pa.field('domain', pa.large_string()),
+        pa.field('subsidiary_entity', pa.large_string()),
+        pa.field('parent_entity', pa.large_string()),
+        pa.field('relationship_tier', pa.large_string()),
+        pa.field('is_technical_3p', pa.float64()),  # explicit float64
+    ]
+    target_schema = pa.schema(list(input_schema) + enrichment_fields)
+    
+    writer = pq.ParquetWriter(output_path, target_schema)
+    rows_processed = 0
+    tier_counter = {}
+    
+    try:
+        for batch in parquet_file.iter_batches(batch_size=50_000):
+            df_chunk = batch.to_pandas()
+            
+            enrichment_results = df_chunk.apply(
+                lambda row: enrich_row(
+                    row, domain_to_node, visit_map,
+                    target['domain_column'], target['context_column']
+                ),
+                axis=1
+            )
+            enriched_chunk = pd.concat([df_chunk, enrichment_results], axis=1)
+            
+            # Convert to Arrow AND cast to the fixed schema
+            table_chunk = pa.Table.from_pandas(
+                enriched_chunk,
+                schema=target_schema,      # <-- enforce schema
+                preserve_index=False
+            )
+            
+            writer.write_table(table_chunk)
+            
+            for tier, count in enriched_chunk['relationship_tier'].value_counts().items():
+                tier_counter[tier] = tier_counter.get(tier, 0) + count
+            
+            rows_processed += len(df_chunk)
+            print(f"  Processed {rows_processed:,} / {total_rows:,} rows "
+                  f"({100*rows_processed/total_rows:.1f}%)")
+            
+            del df_chunk, enrichment_results, enriched_chunk, table_chunk
+    finally:
+        writer.close()
+    
     print(f"\nEnrichment Summary — {target['input_file']}:")
-    for tier, count in tier_counts.items():
+    for tier, count in sorted(tier_counter.items(), key=lambda x: -x[1]):
         print(f" - {tier:25}: {count:>8,}")
-    return
 
 
 def main():
@@ -215,7 +231,7 @@ def main():
     # Step 1: Load the Entity Tree
     print(f"Loading entity tree from {TREE_CSV_PATH.name}...")
     # load_tree returns (root, domain_to_node)
-    _, domain_to_node = load_tree(str(TREE_CSV_PATH))
+    _, domain_to_node = load_tree(TREE_CSV_PATH)
 
     # Step 2: Load site visits and build fallback visit map
     visit_path = PARQUET_DIR / "site_visits.parquet"
