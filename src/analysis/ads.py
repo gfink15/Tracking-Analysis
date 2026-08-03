@@ -329,8 +329,8 @@ def tracking_intensity_by_category(min_confidence: str = 'high') -> pd.DataFrame
         return con.execute(f"""
             WITH tracker_counts AS (
                 SELECT visit_id, COUNT(DISTINCT url) AS n_trackers
-                FROM http_requests
-                WHERE is_tracker = true
+                FROM http_requests_enriched
+                WHERE relationship_tier IN ('external third-party', 'inter-family third-party')
                 GROUP BY visit_id
             )
             SELECT 
@@ -360,9 +360,9 @@ def tracker_network_cooccurrence(min_confidence: str = 'high',
                 COUNT(DISTINCT ae.ad_hash) AS shared_ads,
                 COUNT(DISTINCT ae.profile) AS n_profiles
             FROM ads_enriched ae
-            JOIN http_requests hr USING (visit_id)
+            JOIN http_requests_enriched hr USING (visit_id)
             WHERE {_confidence_clause(min_confidence, table_alias='ae')}
-              AND hr.is_tracker = true
+              AND hr.relationship_tier IN ('external third-party', 'inter-family third-party')
               AND ae.advertiser_network IS NOT NULL
               AND ae.advertiser_network != 'unknown'
             GROUP BY ae.advertiser_network, tracker_domain
@@ -378,8 +378,8 @@ def network_category_tracking_matrix(min_confidence: str = 'high') -> pd.DataFra
         return con.execute(f"""
             WITH tracker_counts AS (
                 SELECT visit_id, COUNT(DISTINCT url) AS n_trackers
-                FROM http_requests
-                WHERE is_tracker = true
+                FROM http_requests_enriched
+                WHERE relationship_tier IN ('external third-party', 'inter-family third-party')
                 GROUP BY visit_id
             )
             SELECT 
