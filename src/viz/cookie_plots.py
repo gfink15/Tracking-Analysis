@@ -52,11 +52,13 @@ def plot_first_vs_third_party(
     title: str = 'Cookies set by profile (first vs third party)',
     save_path: Optional[Path | str] = None,
 ) -> Figure:
-    """Stacked bar of first-party vs third-party cookie counts per profile.
+    """Stacked bar of first-party vs inter-family vs external third-party
+    cookie counts per profile.
 
     Args:
         df: DataFrame from cookie_counts_by_profile() with columns
-            'profile', 'n_first_party', 'n_third_party'.
+            'profile', 'n_first_party', 'n_inter_family_third_party',
+            'n_external_third_party'.
 
     The stacked-bar form lets readers see BOTH the absolute volume
     (total bar height) AND the composition (first vs third split).
@@ -77,24 +79,37 @@ def plot_first_vs_third_party(
         width, label='First-party',
         color='#7F8C8D', edgecolor='black', linewidth=0.5,
     )
-    # Third-party stacked on top
-    bars_tp = ax.bar(
-        x, df_sorted['n_third_party'],
+    # Inter-family third-party stacked on top of first-party
+    bars_iftp = ax.bar(
+        x, df_sorted['n_inter_family_third_party'],
         width, bottom=df_sorted['n_first_party'],
-        label='Third-party',
+        label='Inter-family third-party',
+        color='#E67E22', edgecolor='black', linewidth=0.5,
+    )
+    # External third-party stacked on top of inter-family
+    bars_etp = ax.bar(
+        x, df_sorted['n_external_third_party'],
+        width, bottom=df_sorted['n_first_party'] + df_sorted['n_inter_family_third_party'],
+        label='External third-party',
         color='#E74C3C', edgecolor='black', linewidth=0.5,
     )
 
     # Annotate each segment with its count
-    for i, (fp, tp) in enumerate(zip(
-        df_sorted['n_first_party'], df_sorted['n_third_party']
+    for i, (fp, iftp, etp) in enumerate(zip(
+        df_sorted['n_first_party'],
+        df_sorted['n_inter_family_third_party'],
+        df_sorted['n_external_third_party'],
     )):
         if fp > 0:
             ax.text(i, fp / 2, f'{fp:,}',
                     ha='center', va='center',
                     color='white', fontsize=10, fontweight='bold')
-        if tp > 0:
-            ax.text(i, fp + tp / 2, f'{tp:,}',
+        if iftp > 0:
+            ax.text(i, fp + iftp / 2, f'{iftp:,}',
+                    ha='center', va='center',
+                    color='white', fontsize=10, fontweight='bold')
+        if etp > 0:
+            ax.text(i, fp + iftp + etp / 2, f'{etp:,}',
                     ha='center', va='center',
                     color='white', fontsize=10, fontweight='bold')
 
@@ -183,20 +198,20 @@ def plot_lifespan_distribution(
 # ─────────────────────────────────────────────────────────────────────
 def plot_retargeting_presence(
     df: pd.DataFrame,
-    metric: str = 'n_cookies',
+    metric: str = 'n_cookie_events',
     title: Optional[str] = None,
     save_path: Optional[Path | str] = None,
 ) -> Figure:
-    """Grouped bar chart: retargeting networks × profiles.
+    """Grouped bar chart: retargeting networks x profiles.
 
     Args:
         df: DataFrame from retargeting_cookie_presence() with columns
-            'profile', 'retargeter', 'n_cookies', 'n_visits_affected'.
-        metric: Which column to plot — 'n_cookies' (volume) or
+            'profile', 'retargeter', 'n_cookie_events', 'n_visits_affected'.
+        metric: Which column to plot — 'n_cookie_events' (volume) or
             'n_visits_affected' (reach).
 
     This figure is often the most striking in a tracking study: if
-    one profile shows 5-10× more Criteo cookies than another, the
+    one profile shows 5-10x more Criteo cookies than another, the
     figure makes that obvious at a glance.
     """
     apply_style()
@@ -223,7 +238,7 @@ def plot_retargeting_presence(
 
     ax.set_yticks(y)
     ax.set_yticklabels(pivot.index)
-    ax.set_xlabel('Number of cookies' if metric == 'n_cookies'
+    ax.set_xlabel('Number of cookie events' if metric == 'n_cookie_events'
                   else 'Visits affected')
     ax.set_title(title or f'Retargeting network presence ({metric})')
     ax.legend(loc='lower right')
@@ -245,7 +260,7 @@ def plot_sync_summary(
     Args:
         df: DataFrame from cookie_sync_summary() with columns
             'profile', 'n_sync_events', 'n_visits_with_syncs',
-            'avg_hosts_per_sync'.
+            'avg_parents_per_sync'.
 
     Two side-by-side bars per profile: total events and visits
     affected. The ratio between them is also informative

@@ -21,6 +21,7 @@ from config import (
     DUCKDB_PATH,
     PARQUET_DIR,
     OPENWPM_TABLES,
+    ENRICHED_TABLES,
     DUCKDB_MEMORY_LIMIT,
     DUCKDB_THREADS,
 )
@@ -81,25 +82,27 @@ def init_database() -> None:
         registered += 1
 
     # ─────────────────────────────────────────────────────────────
-    # HTTP requests enriched (from http_requests_enriched.parquet)
+    # Register enriched parquet file views (from enrich_parquet.py)
     # ─────────────────────────────────────────────────────────────
-    http_enriched_path = PARQUET_DIR / "http_requests_enriched.parquet"
-    if http_enriched_path.exists():
+    print("\nRegistering enriched views:")
+    for table in ENRICHED_TABLES:
+        parquet_path = PARQUET_DIR / f"{table}.parquet"
+        if not parquet_path.exists():
+            print(f"  ⚠  {table}: parquet file not found — run enrich_parquet.py first:")
+            print( "       python -m src.ingestion.enrich_parquet")
+            continue
         con.execute(f"""
-            CREATE OR REPLACE VIEW http_requests_enriched AS
-            SELECT * FROM read_parquet('{http_enriched_path}')
+            CREATE OR REPLACE VIEW {table} AS
+            SELECT * FROM read_parquet('{parquet_path}')
         """)
         # Verify the view works by querying row count.
-        nn = con.execute("SELECT COUNT(*) FROM http_requests_enriched").fetchone()
+        nn = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
         n = nn[0] if nn else 0
-        print(f"  ✓ {'http_requests_enriched':25s} ({n:>10,} rows)")
+        print(f"  ✓ {table:25s} ({n:>10,} rows)")
         registered += 1
-    else:
-        print(f"  ⚠  {http_enriched_path.name} not found — run enrich_parquet.py first:")
-        print( "       python -m src.ingestion.enrich_parquet")
 
     # ─────────────────────────────────────────────────────────────
-    # VLM ad descriptions (from ads_desc.parquet)
+    # VLM ad descriptions and ads_enriched (from ads_desc.parquet)
     # ─────────────────────────────────────────────────────────────
     ad_desc_path = PARQUET_DIR / "ads_desc.parquet"
     if ad_desc_path.exists():
@@ -109,26 +112,27 @@ def init_database() -> None:
         """)
         print(f"✓ Registered ads_desc view ({ad_desc_path.name})")
         registered += 1
-    else:
-        print(f"⚠  {ad_desc_path.name} not found — skipping ads_desc registration")
 
-    # join ads and ads_desc to create and register ads_enriched
-    con.execute(f"""
-        CREATE OR REPLACE VIEW ads_enriched AS
-        SELECT 
-            a.*,
-            d.is_valid_ad,
-            d.category,
-            d.product,
-            d.brand,
-            d.description,
-            d.content AS vlm_text,
-            d.confidence AS vlm_confidence
-        FROM read_parquet('{PARQUET_DIR}/ads.parquet') a
-        LEFT JOIN read_parquet('{PARQUET_DIR}/ads_desc.parquet') d
-        USING (visit_id, ad_hash)
-    """)
-    registered += 1
+        # join ads and ads_desc to create and register ads_enriched
+        con.execute(f"""
+            CREATE OR REPLACE VIEW ads_enriched AS
+            SELECT 
+                a.*,
+                d.is_valid_ad,
+                d.category,
+                d.product,
+                d.brand,
+                d.description,
+                d.content AS vlm_text,
+                d.confidence AS vlm_confidence
+            FROM read_parquet('{PARQUET_DIR}/ads.parquet') a
+            LEFT JOIN read_parquet('{PARQUET_DIR}/ads_desc.parquet') d
+            USING (visit_id, ad_hash)
+        """)
+        registered += 1
+
+    else:
+        print(f"⚠  {ad_desc_path.name} not found — skipping ads_desc registration and ads_enriched creation")
 
     con.close()
     print("\n" + "─" * 60)
