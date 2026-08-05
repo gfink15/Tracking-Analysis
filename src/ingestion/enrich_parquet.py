@@ -159,7 +159,20 @@ def enrich_row(
     })
 
 
-def enrich_table(target, domain_to_node, visit_map):
+def enrich_table(target: dict, domain_to_node: dict, visit_map: dict) -> None:
+    """
+    Orchestrates the enrichment pipeline for a single target table.
+
+    Loads input parquet file, applies row-level enrichment via
+    enrich_row(), concatenates enriched columns to original DataFrame,
+    writes enriched output file, and prints per-table tier summary.
+
+    Args:
+        target: dict entry from ENRICHMENT_TARGETS containing input/output
+                paths and column mappings
+        domain_to_node: mapping dictionary from load_tree() for entity lookup
+        visit_map: site_visit dictionary for unknown domain fallback
+    """
     input_path = PARQUET_DIR / target['input_file']
     output_path = PARQUET_DIR / target['output_file']
     
