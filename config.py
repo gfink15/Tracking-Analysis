@@ -187,3 +187,4 @@ class Categories(Enum):
     Safety = "Public Safety"
     Scam = "Likely Scam"
     Other = "Other"
+    NA = "None"
