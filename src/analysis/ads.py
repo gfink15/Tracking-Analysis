@@ -8,6 +8,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from typing import Optional
+from scipy import stats
 
 import pandas as pd
 import numpy as np
@@ -151,6 +152,7 @@ def category_distribution_by_profile(min_confidence: str = 'high',
                 FROM ads_enriched
                 WHERE {_confidence_clause(min_confidence)}
                   AND category IS NOT NULL
+                  AND same_company IS NOT TRUE
                   AND TRIM(category) != ''
                 GROUP BY profile, LOWER(TRIM(category))
             ),

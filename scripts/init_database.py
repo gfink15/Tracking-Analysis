@@ -124,7 +124,15 @@ def init_database() -> None:
                 d.brand,
                 d.description,
                 d.content AS vlm_text,
-                d.confidence AS vlm_confidence
+                d.confidence AS vlm_confidence,
+                d.status,
+                d.reason,
+                d.viewed,
+                d.modified,
+                d.same_company,
+                d.old_category,
+                d.old_description,
+                d.notes
             FROM read_parquet('{PARQUET_DIR}/ads.parquet') a
             LEFT JOIN read_parquet('{PARQUET_DIR}/ads_desc.parquet') d
             USING (visit_id, ad_hash)

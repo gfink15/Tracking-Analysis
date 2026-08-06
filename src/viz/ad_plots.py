@@ -419,6 +419,9 @@ def plot_category_heatmap(cat_matrix: pd.DataFrame,
     Returns:
         The matplotlib Figure object.
     """
+
+    
+    
     fig, ax = plt.subplots(figsize=figsize)
     sns.heatmap(
         cat_matrix,

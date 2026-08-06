@@ -28,6 +28,7 @@ from src.analysis.pixels import (
 
 logger = logging.getLogger(__name__)
 
+parent_dir = str(Path(__file__).resolve().parent.parent.parent)
 
 # ---------------------------------------------------------------------------
 # Register pixel tables in DuckDB
@@ -138,7 +139,6 @@ def register_seeding_pixels(
 def create_ads_with_pixel_context(
     con: duckdb.DuckDBPyConnection,
     ads_enriched_view: str = "ads_enriched",
-    min_confidence: float = 0.7,
     require_networks_agree: bool = False,
 ) -> None:
     """
@@ -173,10 +173,12 @@ def create_ads_with_pixel_context(
                 ae.category,
                 ae.product,
                 ae.brand,
-                ae.vlm_confidence
+                ae.vlm_confidence,
+                ae.same_company
             FROM {ads_enriched_view} ae
             WHERE ae.is_valid_ad = TRUE
               AND ae.category IS NOT NULL
+              AND ae.same_company IS NOT TRUE
               {agree_filter}
         )
         SELECT
