@@ -89,12 +89,96 @@ from src.analysis.ads_pixels_join import (
 )
 
 con = duckdb.connect("artifacts/analysis.duckdb")
-
+TARGET_PIXELS = [
+        "Meta Pixel",
+        # "DoubleClick",
+        # "Google Ads Conversion",
+        "Criteo", 
+        "TikTok Pixel",
+        "Pinterest Tag",
+        "Snap Pixel",
+        "Microsoft UET",
+        "X/Twitter Pixel",
+        "LinkedIn Insight",
+    ]
 # FIX #2: use a glob that actually matches per-profile parquets
 register_pixel_tables(
     con,
-    http_requests_parquet_glob="artifacts/parquet/*/http_requests.parquet",
+    http_requests_parquet_glob="artifacts/parquet/http_requests_enriched.parquet",
+    target_pixels=TARGET_PIXELS,
+    require_path_confirmed=True,
+    only_third_party=True,
+    exclude_technical_3p=False,   # ← CHANGE: was True, now False
 )
+
+# --- DIAGNOSTIC BLOCK: figure out where the pixels are being lost ---
+print("\n=== Pixel Detection Diagnostic ===\n")
+
+# Step 1: How many raw requests are in the parquet?
+n_reqs = con.execute("""
+    SELECT COUNT(*) FROM read_parquet(
+        'artifacts/parquet/http_requests_enriched.parquet',
+        union_by_name=true
+    )
+""").fetchone()[0]
+print(f"1. Total HTTP requests loaded: {n_reqs:,}")
+
+# Step 2: How many pixel classifications occurred (BEFORE any filters)?
+tables = [r[0] for r in con.execute("SHOW TABLES").fetchall()]
+if "pixel_hits_raw" not in tables:
+    print("❌ pixel_hits_raw missing — register_pixel_tables didn't run properly")
+else:
+    n_hits = con.execute("SELECT COUNT(*) FROM pixel_hits_raw").fetchone()[0]
+    print(f"2. Raw pixel classifications: {n_hits:,}")
+
+    if n_hits > 0:
+        # Break down by pixel_type
+        print("\n3. Hits by pixel_type:")
+        print(con.execute("""
+            SELECT pixel_type, COUNT(*) AS n,
+                   SUM(CASE WHEN path_confirmed THEN 1 ELSE 0 END) AS n_path_confirmed
+            FROM pixel_hits_raw
+            GROUP BY pixel_type
+            ORDER BY n DESC
+        """).df().to_string(index=False))
+
+        # Impact of require_path_confirmed
+        n_conf = con.execute("""
+            SELECT COUNT(*) FROM pixel_hits_raw WHERE path_confirmed = TRUE
+        """).fetchone()[0]
+        print(f"\n4. Hits with path_confirmed=TRUE: {n_conf:,} "
+              f"({100*n_conf/max(n_hits,1):.1f}%)")
+
+        # Impact of only_third_party (are parent entities populated?)
+        n_with_entity = con.execute("""
+            SELECT COUNT(*) FROM pixel_hits_raw
+            WHERE top_level_parent_entity IS NOT NULL
+              AND request_parent_entity IS NOT NULL
+        """).fetchone()[0]
+        print(f"5. Hits with BOTH parent_entities populated: {n_with_entity:,} "
+              f"({100*n_with_entity/max(n_hits,1):.1f}%)")
+
+        n_cross = con.execute("""
+            SELECT COUNT(*) FROM pixel_hits_raw
+            WHERE top_level_parent_entity IS NOT NULL
+              AND request_parent_entity IS NOT NULL
+              AND top_level_parent_entity != request_parent_entity
+        """).fetchone()[0]
+        print(f"6. Hits that are cross-entity (3P): {n_cross:,} "
+              f"({100*n_cross/max(n_hits,1):.1f}%)")
+
+        # Impact of exclude_technical_3p
+        if "is_technical_3p" in con.execute(
+            "DESCRIBE pixel_hits_raw"
+        ).df()["column_name"].values:
+            n_nontech = con.execute("""
+                SELECT COUNT(*) FROM pixel_hits_raw
+                WHERE COALESCE(is_technical_3p, 0) < 0.5
+            """).fetchone()[0]
+            print(f"7. Non-technical 3P hits: {n_nontech:,} "
+                  f"({100*n_nontech/max(n_hits,1):.1f}%)")
+
+print("\n=== End Diagnostic ===\n")
 
 # FIX #3: warn if seeding data is missing
 seeding_dfs = []
@@ -105,8 +189,54 @@ for sqlite_path in Path("data/persona_profiles").glob("*/crawl-data.sqlite"):
 if not seeding_dfs:
     print("⚠️  No seeding SQLite DBs found — seeded-site analysis will be empty.")
 seeding_all = pd.concat(seeding_dfs, ignore_index=True) if seeding_dfs else pd.DataFrame()
-register_seeding_pixels(con, seeding_all)
+register_seeding_pixels(
+    con, seeding_all,
+    target_pixels=TARGET_PIXELS,   # same list as above
+    require_path_confirmed=True,
+    # (no exclude_technical_3p here — the function doesn't take it,
+    # but if you add it later, keep it False)
+)
+# Which pixel platforms is is_technical_3p flagging as "technical"?
+# If Meta/DoubleClick/etc. all show >95% technical, the flag is broken
+# for our purposes and dropping it is the right call.
+print("\n=== Is is_technical_3p reliable for ad-pixel filtering? ===")
+print(con.execute("""
+    SELECT
+        pixel_type,
+        COUNT(*) AS total_hits,
+        SUM(CASE WHEN COALESCE(is_technical_3p, 0) >= 0.5 THEN 1 ELSE 0 END)
+            AS flagged_technical,
+        ROUND(100.0 * AVG(CASE WHEN COALESCE(is_technical_3p, 0) >= 0.5
+                              THEN 1.0 ELSE 0.0 END), 1)
+            AS pct_technical
+    FROM pixel_hits_raw
+    GROUP BY pixel_type
+    ORDER BY total_hits DESC
+""").df().to_string(index=False))
+# --- Confirm what site_pixels actually contains ---
+print("\n=== What site_pixels actually contains ===")
+sp_summary = con.execute("""
+    SELECT
+        profile,
+        COUNT(*) AS n_entities,
+        SUM(CASE WHEN has_pixel THEN 1 ELSE 0 END) AS n_with_pixel,
+        ROUND(100.0 * AVG(CASE WHEN has_pixel THEN 1.0 ELSE 0.0 END), 1)
+            AS pct_with_pixel,
+        SUM(n_pixel_hits) AS total_hits_aggregated
+    FROM site_pixels
+    GROUP BY profile
+    ORDER BY profile
+""").df()
+print(sp_summary.to_string(index=False))
 
+print("\nTop entities by pixel hits (sanity check):")
+print(con.execute("""
+    SELECT top_level_parent_entity, n_pixel_hits, n_distinct_pixel_types,
+           pixel_types
+    FROM site_pixels
+    ORDER BY n_pixel_hits DESC
+    LIMIT 10
+""").df().to_string(index=False))
 # FIX #4: categorical confidence (adjust if create_ads_with_pixel_context expects float)
 create_ads_with_pixel_context(con)
 

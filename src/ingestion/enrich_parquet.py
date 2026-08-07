@@ -37,24 +37,24 @@ BATCH_SIZE = 50_000
 # Configuration for tables to be enriched
 # Update corresponding constant ENRICHED_TABLES in config.py
 ENRICHMENT_TARGETS = {
-    "http_requests": {
-        "input_file": "http_requests.parquet",
-        "output_file": "http_requests_enriched.parquet",
-        "domain_column": "url",
-        "context_column": "top_level_url"
-    },
-    "javascript_cookies": {
-        "input_file": "javascript_cookies.parquet",
-        "output_file": "javascript_cookies_enriched.parquet",
-        "domain_column": "host",
-        "context_column": None
-    },
-    # "javascript": {
-    #     "input_file": "javascript.parquet",
-    #     "output_file": "javascript_enriched.parquet",
-    #     "domain_column": "script_url",
+    # "http_requests": {
+    #     "input_file": "http_requests.parquet",
+    #     "output_file": "http_requests_enriched.parquet",
+    #     "domain_column": "url",
     #     "context_column": "top_level_url"
-    # }
+    # },
+    # "javascript_cookies": {
+    #     "input_file": "javascript_cookies.parquet",
+    #     "output_file": "javascript_cookies_enriched.parquet",
+    #     "domain_column": "host",
+    #     "context_column": None
+    # },
+    "javascript": {
+        "input_file": "javascript.parquet",
+        "output_file": "javascript_enriched.parquet",
+        "domain_column": "script_url",
+        "context_column": "top_level_url"
+    }
 }
 
 
@@ -140,7 +140,7 @@ def enrich_row(
     
     # --- 5. Classify Relationship ---
     # Returns dict: {is_technical_3p, is_subsidiary_3p, is_parent_3p}
-    flags = classify_relationship(req_node, top_node)
+    flags = classify_relationship(req_node, top_node) # type: ignore
     
     # --- 6. Determine Tier (Priority: Parent > Subsidiary > First-party) ---
     if flags['is_parent_third_party']:
