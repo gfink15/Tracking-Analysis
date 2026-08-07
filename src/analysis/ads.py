@@ -151,9 +151,11 @@ def category_distribution_by_profile(min_confidence: str = 'high',
                     COUNT(*) AS n_ads
                 FROM ads_enriched
                 WHERE {_confidence_clause(min_confidence)}
-                  AND category IS NOT NULL
-                  AND same_company IS NOT TRUE
-                  AND TRIM(category) != ''
+                    AND category IS NOT NULL
+                    AND same_company IS NOT TRUE
+                    AND TRIM(category) != ''
+                    AND TRIM(category) != 'None'
+                    AND is_valid_ad IS TRUE
                 GROUP BY profile, TRIM(category)
             ),
             profile_totals AS (
@@ -187,8 +189,13 @@ def top_brands_by_profile(top_n: int = 15,
                 MODE() WITHIN GROUP (ORDER BY confidence) AS modal_confidence
             FROM ads_enriched
             WHERE {_confidence_clause(min_confidence)}
-              AND brand IS NOT NULL
-              AND TRIM(brand) != ''
+                AND brand IS NOT NULL
+                AND TRIM(brand) != ''
+                AND category IS NOT NULL
+                AND same_company IS NOT TRUE
+                AND TRIM(category) != ''
+                AND TRIM(category) != 'None'
+                AND is_valid_ad IS TRUE
             GROUP BY profile, TRIM(brand)
             HAVING n_ads >= 2
             ORDER BY profile, n_ads DESC
@@ -206,8 +213,13 @@ def top_products_by_profile(top_n: int = 15,
                 COUNT(*) AS n_ads
             FROM ads_enriched
             WHERE {_confidence_clause(min_confidence)}
-              AND product IS NOT NULL
-              AND TRIM(product) != ''
+                AND product IS NOT NULL
+                AND TRIM(product) != ''
+                AND category IS NOT NULL
+                AND same_company IS NOT TRUE
+                AND TRIM(category) != ''
+                AND TRIM(category) != 'None'
+                AND is_valid_ad IS TRUE
             GROUP BY profile, TRIM(product)
             HAVING n_ads >= 2
             ORDER BY profile, n_ads DESC

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any, cast
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -356,5 +356,82 @@ def plot_fingerprinter_summary(
     ax.set_title(title)
     ax.legend(title='Technique')
     plt.tight_layout()
+    _save_if_requested(fig, save_path)
+    return fig
+
+# ─────────────────────────────────────────────────────────────────────
+# PREVALENCE HEATMAP
+# ─────────────────────────────────────────────────────────────────────
+
+def plot_cookie_heatmap(
+    df: pd.DataFrame,
+    top_n: int = 25,
+    title: str = 'Top cookie-setting entities across profiles',
+    save_path: Optional
+[Path | str] = None,
+) -> Figure:
+    """Heatmap of cookie prevalence (%) across profiles.
+
+    Mirrors plot_tracker_heatmap() but for cookie data. Together, the
+    two heatmaps enable the "leakage vs. persistence" comparison that
+    is central to this study: an entity that dominates the tracker
+    heatmap but is muted in the cookie heatmap is being blocked at
+    the state-persistence layer even though its network request still
+    fires. Conversely, an entity that spikes in the cookie heatmap for
+    the seeded profile but not the control is direct evidence of
+    behavioral profiling.
+
+    Args:
+        df: Long-format DataFrame from cookie_prevalence_table(),
+            with columns: profile, entity, pct_of_visits.
+        top_n: Number of entities to show (by total prevalence).
+        title: Figure title.
+        save_path: Optional file path (relative paths go in FIGURES_DIR).
+    """
+    apply_style()
+
+    # Pivot to wide format for the heatmap. cookie_prevalence_table
+    # returns its entity column as literally 'entity' regardless of
+    # the granularity used (domain / subsidiary_entity / parent_entity),
+    # so we can index on it unconditionally.
+    pivot = df.pivot(index='entity', columns='profile', values='pct_of_visits')
+
+    # Preserve canonical profile column ordering; fill any profile that
+    # never encountered a top-N entity with 0 rather than NaN.
+    pivot = pivot.reindex(columns=PROFILES).fillna(0)
+
+    # Sort entities by total prevalence so the most common are at top,
+    # then trim to top_n. This matches plot_tracker_heatmap's implicit
+    # ordering (its top-N filtering already happens in the SQL, but
+    # sorting again here is defensive and cheap).
+    pivot = pivot.loc[
+        pivot.sum(axis=1).sort_values(ascending=False).index[:top_n]
+    ]
+
+    fig, ax = plt.subplots(figsize=(8, max(6, top_n * 0.3)))
+    im = ax.imshow(pivot.values, aspect='auto', cmap='YlOrRd', vmin=0, vmax=100)
+
+    ax.set_xticks(range(len(pivot.columns)))
+    ax.set_xticklabels([PROFILE_LABELS[p] for p in pivot.columns],
+                       rotation=30, ha='right')
+    ax.set_yticks(range(len(pivot.index)))
+    ax.set_yticklabels(pivot.index, fontsize=9)
+
+    # Cell annotations. Skip if grid is too dense to keep labels legible.
+    if top_n <= 30:
+        for i in range(len(pivot.index)):
+            for j in range(len(pivot.columns)):
+                val = float(cast(Any, pivot.iloc[i, j]))
+                # White text on dark cells, black on light. Threshold at 50%.
+                color = 'white' if val > 50 else 'black'
+                ax.text(j, i, f'{val:.0f}',
+                        ha='center', va='center',
+                        color=color, fontsize=8)
+
+    plt.colorbar(im, ax=ax, label='% of visits where entity set a cookie')
+    ax.set_title(title)
+    ax.grid(False)  # heatmaps shouldn't have grid lines
+    plt.tight_layout()
+
     _save_if_requested(fig, save_path)
     return fig

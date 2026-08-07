@@ -299,6 +299,90 @@ def cookie_sync_summary() -> pd.DataFrame:
                  .round(2)
                  .reset_index())
 
+def cookie_prevalence_table(
+    granularity: str = "parent_entity",
+    top_n: int = 50,
+) -> pd.DataFrame:
+    """Frequency of each cookie-setting entity appearing per profile.
+
+    Mirrors tracker_prevalence_table() in trackers.py, but against
+    javascript_cookies_enriched. Answers: "What percentage of visits
+    in each profile encountered a cookie from entity X?"
+
+    Produces a long-format table you can pivot for heatmaps:
+        profile | entity | n_visits_seen | pct_of_visits
+
+    Args:
+        granularity: Entity level for aggregation.
+            - "domain": endpoint-level.
+            - "subsidiary_entity": product/service-level.
+            - "parent_entity": corporate actor level (default, matches
+              tracker_prevalence_table default behavior).
+        top_n: Return the top-N entities by total cross-profile
+            visit count. Prevents thousands of rare hosts from
+            drowning out the signal in visualizations.
+
+    Returns:
+        Long-format DataFrame, sortable by total prevalence.
+    """
+    valid = {"domain", "subsidiary_entity", "parent_entity"}
+    if granularity not in valid:
+        raise ValueError(
+            f"granularity must be one of {valid}, got {granularity!r}"
+        )
+
+    with db_session(read_only=True) as con:
+        df = con.execute(f"""
+            WITH per_visit_entity AS (
+                -- Deduplicate: one row per (profile, visit, entity).
+                -- A visit that sets 40 cookies from Google should count
+                -- as ONE Google-presence, not 40. This matches the
+                -- semantics of tracker_prevalence_table.
+                SELECT DISTINCT
+                    profile,
+                    visit_id,
+                    {granularity} AS entity
+                FROM javascript_cookies_enriched
+                WHERE relationship_tier IN (
+                    'inter-family third-party',
+                    'external third-party'
+                )
+            ),
+            per_profile_entity AS (
+                SELECT
+                    profile,
+                    entity,
+                    COUNT(*) AS n_visits_seen
+                FROM per_visit_entity
+                GROUP BY profile, entity
+            ),
+            profile_visit_totals AS (
+                SELECT profile, COUNT(DISTINCT visit_id) AS total_visits
+                FROM site_visits
+                GROUP BY profile
+            ),
+            top_overall AS (
+                -- Same top-N-across-all-profiles logic as the tracker
+                -- version, so heatmaps are apples-to-apples.
+                SELECT entity
+                FROM per_profile_entity
+                GROUP BY entity
+                ORDER BY SUM(n_visits_seen) DESC
+                LIMIT {top_n}
+            )
+            SELECT
+                p.profile,
+                p.entity,
+                p.n_visits_seen,
+                ROUND(p.n_visits_seen * 100.0 / t.total_visits, 2)
+                    AS pct_of_visits
+            FROM per_profile_entity p
+            JOIN profile_visit_totals t USING (profile)
+            WHERE p.entity IN (SELECT entity FROM top_overall)
+            ORDER BY p.entity, p.profile
+        """).df()
+
+    return df
 
 if __name__ == "__main__":
     print("Cookie counts by profile:")
