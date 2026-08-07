@@ -361,7 +361,7 @@ def render_all(
         ("targeting_by_platform", "targeting_by_platform.csv", plot_targeting_by_platform),
         ("category_by_platform",  "category_by_platform.csv",  plot_category_by_platform_heatmap),
         ("seeded_site_impact",    "seeded_site_impact.csv",    plot_seeded_site_impact),
-        ("intensity_response", "intensity_response.csv", plot_intensity_response),
+        ("intensity_response", "targeting_intensity.csv", plot_intensity_response),
     ]
 
     with PdfPages(pdf_path) as pdf:

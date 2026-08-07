@@ -26,6 +26,160 @@ from config import (
 )
 from src.viz.tracker_plots import apply_style, _save_if_requested
 
+# ─────────────────────────────────────────────────────────────
+# STATISTICAL SIGNIFICANCE HELPERS
+# ─────────────────────────────────────────────────────────────
+from scipy.stats import chi2_contingency, fisher_exact
+from itertools import combinations
+
+def _sig_marker(p: float) -> str:
+    """Convert p-value to APA-style significance marker."""
+    if pd.isna(p):
+        return ""
+    if p < 0.001:
+        return "***"
+    if p < 0.01:
+        return "**"
+    if p < 0.05:
+        return "*"
+    return "ns"
+
+
+def compute_category_pvalues(
+    category_counts: pd.DataFrame,
+    profile_col: str = "profile",
+    category_col: str = "category",
+    count_col: str = "n_ads",
+    baseline: str = "control",
+    bonferroni: bool = True,
+) -> pd.DataFrame:
+    """
+    For each (persona, category), test whether the persona's ad-category
+    distribution differs from the control baseline.
+
+    Uses a 2x2 contingency table per cell:
+                    | category X | all other categories
+        persona     |     a      |          b
+        control     |     c      |          d
+
+    Chi-square if all expected counts >= 5, else Fisher's exact.
+
+    Returns
+    -------
+    DataFrame with columns:
+        profile, category, n_persona, n_control,
+        pct_persona, pct_control, p_raw, p_adj, sig, test_used
+    """
+    if category_counts.empty:
+        return pd.DataFrame()
+
+    # Pivot to wide: rows=profile, cols=category, values=n_ads
+    wide = (
+        category_counts
+        .pivot_table(index=profile_col, columns=category_col,
+                     values=count_col, aggfunc="sum", fill_value=0)
+    )
+
+    if baseline not in wide.index:
+        raise ValueError(f"Baseline profile '{baseline}' not in data.")
+
+    control_row = wide.loc[baseline]
+    control_total = control_row.sum()
+
+    results = []
+    personas = [p for p in wide.index if p != baseline]
+    categories = list(wide.columns)
+
+    for persona in personas:
+        persona_row = wide.loc[persona]
+        persona_total = persona_row.sum()
+
+        for cat in categories:
+            a = int(persona_row[cat])
+            b = int(persona_total - a)
+            c = int(control_row[cat]) # type: ignore
+            d = int(control_total - c) # type: ignore
+
+            table = np.array([[a, b], [c, d]])
+
+            # Skip degenerate cases
+            if table.sum() == 0 or (a + c) == 0:
+                p_raw, test_used = np.nan, "skipped"
+            else:
+                # Decide chi-square vs Fisher
+                try:
+                    chi2, p_chi, dof, expected = chi2_contingency(table)
+                    if (expected < 5).any(): # type: ignore
+                        _, p_raw = fisher_exact(table)
+                        test_used = "fisher"
+                    else:
+                        p_raw = p_chi
+                        test_used = "chi2"
+                except ValueError:
+                    p_raw, test_used = np.nan, "error"
+
+            results.append({
+                "profile": persona,
+                "category": cat,
+                "n_persona": a,
+                "n_control": c,
+                "pct_persona": 100 * a / persona_total if persona_total else 0,
+                "pct_control": 100 * c / control_total if control_total else 0, # type: ignore
+                "p_raw": p_raw,
+                "test_used": test_used,
+            })
+
+    df = pd.DataFrame(results)
+
+    # Bonferroni correction across all tests
+    if bonferroni and not df.empty:
+        n_tests = df["p_raw"].notna().sum()
+        df["p_adj"] = (df["p_raw"] * n_tests).clip(upper=1.0)
+    else:
+        df["p_adj"] = df["p_raw"]
+
+    df["sig"] = df["p_adj"].apply(_sig_marker)
+    return df.sort_values(["profile", "category"]).reset_index(drop=True)
+
+
+def annotate_bars_with_pvalues(
+    ax,
+    pvalue_df: pd.DataFrame,
+    profile_order: list,
+    category_order: list,
+    bar_container_by_category: dict,
+) -> None:
+    """
+    Draw significance markers above each persona bar in a grouped bar chart.
+
+    Parameters
+    ----------
+    ax : matplotlib axis
+    pvalue_df : output of compute_category_pvalues()
+    profile_order : list of profiles in x-axis order (must include 'control')
+    category_order : list of categories in legend order
+    bar_container_by_category : dict mapping category -> BarContainer
+        (what ax.bar() returns for each grouped series)
+    """
+    lookup = pvalue_df.set_index(["profile", "category"])["sig"].to_dict()
+
+    y_max = ax.get_ylim()[1]
+    offset = y_max * 0.02
+
+    for cat, container in bar_container_by_category.items():
+        for i, bar in enumerate(container):
+            profile = profile_order[i]
+            if profile == "control":
+                continue  # baseline — no marker
+            marker = lookup.get((profile, cat), "")
+            if marker and marker != "ns":
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + offset,
+                    marker,
+                    ha="center", va="bottom",
+                    fontsize=9, fontweight="bold",
+                )
 
 # ─────────────────────────────────────────────────────────────────────
 # AD VOLUME
@@ -127,6 +281,7 @@ def plot_network_heatmap(
 # ─────────────────────────────────────────────────────────────────────
 def plot_keyword_categories(
     df: pd.DataFrame,
+    category_counts: Optional[pd.DataFrame] = None,  # ← NEW
     title: str = 'Ad content categories by profile (keyword-based)',
     save_path: Optional[Path | str] = None,
 ) -> Figure:
@@ -136,6 +291,14 @@ def plot_keyword_categories(
         df: Long-format DataFrame from keyword_category_counts()
     """
     apply_style()
+    # ─── NEW: build (category, profile) -> sig marker lookup ─────────
+    sig_lookup = {}
+    if category_counts is not None:
+        pvals = compute_category_pvalues(category_counts)
+        sig_lookup = {
+            (row["category"], row["profile"]): row["sig"]
+            for _, row in pvals.iterrows()
+        }
     pivot = (df.pivot(index='category', columns='profile',
                       values='pct_of_ads')
              .reindex(columns=PROFILES)
@@ -157,17 +320,27 @@ def plot_keyword_categories(
             color=PROFILE_COLORS[profile],
             edgecolor='black', linewidth=0.3,
         )
-        for bar in bars:
+        for j, bar in enumerate(bars):
             h = bar.get_height()
-            if h > 1:  # don't annotate tiny bars
-                ax.text(bar.get_x() + bar.get_width() / 2, h * 1.02,
-                        f'{h:.0f}', ha='center', va='bottom', fontsize=8)
+            if h > 1:
+                category = pivot.index[j]
+                marker = sig_lookup.get((category, profile), "")
+                marker_str = marker if marker and marker != "ns" else ""
+                ax.text(bar.get_x() + bar.get_width() / 2,
+                        h + 0.5,
+                        f'{h:.0f}{marker_str}',   # ← added marker
+                        ha='center', va='bottom', fontsize=8)
 
     ax.set_xticks(x)
     ax.set_xticklabels(pivot.index, rotation=20, ha='right')
     ax.set_ylabel('% of ads with category keyword')
     ax.set_title(title)
     ax.legend(loc='upper right')
+    if sig_lookup:
+        fig.text(0.02, -0.02,
+                 "vs. control (Bonferroni-corrected): "
+                 "* p<.05  ** p<.01  *** p<.001",
+                 fontsize=8, style="italic")
     plt.tight_layout()
     _save_if_requested(fig, save_path)
     return fig
@@ -402,6 +575,7 @@ def plot_network_specialization(cat_df: pd.DataFrame,
     return fig
 
 def plot_category_heatmap(cat_matrix: pd.DataFrame,
+                          category_counts: Optional[pd.DataFrame] = None,  # ← NEW
                           title: str = "VLM Ad Categories — % Share by Profile",
                           figsize: tuple = (8, 9),
                           cmap: str = "YlOrRd",
@@ -420,13 +594,31 @@ def plot_category_heatmap(cat_matrix: pd.DataFrame,
         The matplotlib Figure object.
     """
 
-    
+    # ─── NEW: Compute p-values and build annotation matrix ───────────
+    annot_matrix = None
+    fmt = ".1f"
+
+    if category_counts is not None:
+        pvals = compute_category_pvalues(category_counts)
+        sig_lookup = {
+            (row["profile"], row["category"]): row["sig"]
+            for _, row in pvals.iterrows()
+        }
+        # Build string annotation matrix same shape as cat_matrix
+        annot_matrix = cat_matrix.copy().astype(str)
+        for cat in cat_matrix.index:
+            for prof in cat_matrix.columns:
+                val = cat_matrix.loc[cat, prof]
+                marker = sig_lookup.get((prof, cat), "")
+                marker_str = marker if marker and marker != "ns" else ""
+                annot_matrix.loc[cat, prof] = f"{val:.1f}{marker_str}"
+        fmt = ""  # already-formatted strings
     
     fig, ax = plt.subplots(figsize=figsize)
     sns.heatmap(
         cat_matrix,
-        annot=True,
-        fmt=".1f",
+        annot=annot_matrix if annot_matrix is not None else True,  # ← MODIFIED
+        fmt=fmt,                                                    # ← MODIFIED
         cmap=cmap,
         cbar_kws={'label': '% of profile ads'},
         linewidths=0.5,
@@ -438,6 +630,11 @@ def plot_category_heatmap(cat_matrix: pd.DataFrame,
     ax.set_ylabel("VLM Ad Category")
     plt.setp(ax.get_xticklabels(), rotation=0)
     plt.setp(ax.get_yticklabels(), rotation=0)
+    if annot_matrix is not None:
+        fig.text(0.02, -0.02,
+                 "Significance vs. control (Bonferroni-corrected): "
+                 "* p<.05  ** p<.01  *** p<.001",
+                 fontsize=8, style="italic")
     plt.tight_layout()
 
     if save_path:
@@ -446,6 +643,7 @@ def plot_category_heatmap(cat_matrix: pd.DataFrame,
 
 
 def plot_targeting_delta(delta_df: pd.DataFrame,
+                         category_counts: Optional[pd.DataFrame] = None,  # ← NEW
                          title: Optional[str] = None,
                          figsize: tuple = (9, 8),
                          save_path=None) -> Figure:
@@ -488,6 +686,45 @@ def plot_targeting_delta(delta_df: pd.DataFrame,
         label_a = 'Profile A'
         label_b = 'Profile B'
 
+    # ─── NEW: Compute p-values if raw counts provided ────────────────
+    sig_lookup = {}
+    if category_counts is not None:
+        # Which profile is the baseline for this comparison?
+        # compute_category_pvalues always tests <persona> vs <baseline>.
+        # If the delta is "gaming_minus_control", baseline=control, persona=gaming.
+        # If it's "gaming_minus_investor", we need a symmetric call.
+        if profile_b == "control":
+            pvals = compute_category_pvalues(
+                category_counts, baseline="control"
+            )
+            sig_lookup = dict(
+                zip(
+                    pvals[pvals["profile"] == profile_a]["category"],
+                    pvals[pvals["profile"] == profile_a]["sig"],
+                )
+            )
+        elif profile_a == "control":
+            pvals = compute_category_pvalues(
+                category_counts, baseline="control"
+            )
+            sig_lookup = dict(
+                zip(
+                    pvals[pvals["profile"] == profile_b]["category"],
+                    pvals[pvals["profile"] == profile_b]["sig"],
+                )
+            )
+        else:
+            # Persona-vs-persona: rebaseline temporarily
+            pvals = compute_category_pvalues(
+                category_counts, baseline=profile_b
+            )
+            sig_lookup = dict(
+                zip(
+                    pvals[pvals["profile"] == profile_a]["category"],
+                    pvals[pvals["profile"] == profile_a]["sig"],
+                )
+            )
+
     # Color-code: positive = first profile over-served, negative = second profile.
     colors = ['#c0392b' if v < 0 else '#2c7fb8' for v in values]
 
@@ -500,9 +737,15 @@ def plot_targeting_delta(delta_df: pd.DataFrame,
 
     # Annotate each bar with its numeric value
     for i, v in enumerate(values):
+        cat = series.index[i]
+        marker = sig_lookup.get(cat, "")
+        marker_str = f" {marker}" if marker and marker != "ns" else ""
+
         offset = 0.15 if v >= 0 else -0.15
         ha = 'left' if v >= 0 else 'right'
-        ax.text(v + offset, i, f"{v:+.1f}", va='center', ha=ha, fontsize=9)
+        ax.text(v + offset, i,
+                f"{v:+.1f}{marker_str}",   # ← added marker
+                va='center', ha=ha, fontsize=9)
 
     ax.set_xlabel(f"Percentage-point difference ({label_a} − {label_b})")
     ax.set_ylabel("VLM Ad Category")
@@ -521,6 +764,10 @@ def plot_targeting_delta(delta_df: pd.DataFrame,
             ha='left', fontsize=8, style='italic', color='#c0392b')
 
     ax.grid(axis='x', alpha=0.3)
+    if sig_lookup:
+        fig.text(0.02, -0.02,
+                 "Bonferroni-corrected: * p<.05  ** p<.01  *** p<.001",
+                 fontsize=8, style="italic")
     plt.tight_layout()
 
     if save_path:

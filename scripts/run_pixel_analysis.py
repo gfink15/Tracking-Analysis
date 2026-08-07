@@ -85,7 +85,7 @@ from src.analysis.ads_pixels_join import (
     register_pixel_tables, register_seeding_pixels,
     create_ads_with_pixel_context, register_persona_affinity, create_ads_scored,
     category_distribution_by_pixel, category_distribution_by_platform,
-    targeting_accuracy_summary, targeting_accuracy_by_platform, seeded_site_impact,
+    targeting_accuracy_summary, targeting_accuracy_by_platform, seeded_site_impact, get_intensity_stats
 )
 
 con = duckdb.connect("artifacts/analysis.duckdb")
@@ -279,6 +279,22 @@ create_ads_scored(con)
 # FIX #1: parents=True
 out = Path("artifacts/ad_tracker_analysis_outputs")
 out.mkdir(parents=True, exist_ok=True)
+
+# ---------------------------------------------------------------
+# NEW: Intensity (dose-response) — the paper's headline finding
+# ---------------------------------------------------------------
+print("Generating intensity stats...")
+intensity_df = get_intensity_stats(con)
+
+if intensity_df.empty:
+    print("⚠️  intensity_df is empty. Check that ads_scored view exists and "
+          "that site_tracker_entities is populated.")
+else:
+    print(f"✅ Generated intensity table with {len(intensity_df)} rows.")
+    print(intensity_df.to_string(index=False))
+
+intensity_df.to_csv(out / "targeting_intensity.csv", index=False)
+print(f"Wrote {out / 'targeting_intensity.csv'}")
 
 category_distribution_by_pixel(con).to_csv(out / "category_by_pixel.csv", index=False)
 category_distribution_by_platform(con).to_csv(out / "category_by_platform.csv", index=False)

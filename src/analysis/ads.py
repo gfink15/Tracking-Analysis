@@ -147,14 +147,14 @@ def category_distribution_by_profile(min_confidence: str = 'high',
             WITH cat_counts AS (
                 SELECT 
                     profile,
-                    LOWER(TRIM(category)) AS category,
+                    TRIM(category) AS category,
                     COUNT(*) AS n_ads
                 FROM ads_enriched
                 WHERE {_confidence_clause(min_confidence)}
                   AND category IS NOT NULL
                   AND same_company IS NOT TRUE
                   AND TRIM(category) != ''
-                GROUP BY profile, LOWER(TRIM(category))
+                GROUP BY profile, TRIM(category)
             ),
             profile_totals AS (
                 SELECT profile, SUM(n_ads) AS total 
@@ -181,7 +181,7 @@ def top_brands_by_profile(top_n: int = 15,
         return con.execute(f"""
             SELECT 
                 profile,
-                LOWER(TRIM(brand)) AS brand,
+                TRIM(brand) AS brand,
                 COUNT(*) AS n_ads,
                 COUNT(DISTINCT advertiser_network) AS n_networks,
                 MODE() WITHIN GROUP (ORDER BY confidence) AS modal_confidence
@@ -189,7 +189,7 @@ def top_brands_by_profile(top_n: int = 15,
             WHERE {_confidence_clause(min_confidence)}
               AND brand IS NOT NULL
               AND TRIM(brand) != ''
-            GROUP BY profile, LOWER(TRIM(brand))
+            GROUP BY profile, TRIM(brand)
             HAVING n_ads >= 2
             ORDER BY profile, n_ads DESC
         """).df()
@@ -202,13 +202,13 @@ def top_products_by_profile(top_n: int = 15,
         return con.execute(f"""
             SELECT 
                 profile,
-                LOWER(TRIM(product)) AS product,
+                TRIM(product) AS product,
                 COUNT(*) AS n_ads
             FROM ads_enriched
             WHERE {_confidence_clause(min_confidence)}
               AND product IS NOT NULL
               AND TRIM(product) != ''
-            GROUP BY profile, LOWER(TRIM(product))
+            GROUP BY profile, TRIM(product)
             HAVING n_ads >= 2
             ORDER BY profile, n_ads DESC
         """).df()
@@ -337,7 +337,7 @@ def tracking_intensity_by_category(min_confidence: str = 'high') -> pd.DataFrame
             )
             SELECT 
                 ae.profile,
-                LOWER(TRIM(ae.category)) AS category,
+                TRIM(ae.category) AS category,
                 COUNT(DISTINCT ae.ad_hash) AS n_ads,
                 ROUND(AVG(tc.n_trackers), 1) AS avg_trackers_on_page,
                 ROUND(STDDEV(tc.n_trackers), 1) AS stddev_trackers
@@ -345,7 +345,7 @@ def tracking_intensity_by_category(min_confidence: str = 'high') -> pd.DataFrame
             LEFT JOIN tracker_counts tc USING (visit_id)
             WHERE {_confidence_clause(min_confidence, table_alias='ae')}
               AND ae.category IS NOT NULL
-            GROUP BY ae.profile, LOWER(TRIM(ae.category))
+            GROUP BY ae.profile, TRIM(ae.category)
             HAVING n_ads >= 3
             ORDER BY avg_trackers_on_page DESC
         """).df()
@@ -387,7 +387,7 @@ def network_category_tracking_matrix(min_confidence: str = 'high') -> pd.DataFra
             SELECT 
                 ae.profile,
                 ae.advertiser_network,
-                LOWER(TRIM(ae.category)) AS category,
+                TRIM(ae.category) AS category,
                 COUNT(DISTINCT ae.ad_hash) AS n_ads,
                 ROUND(AVG(tc.n_trackers), 1) AS avg_trackers
             FROM ads_enriched ae
@@ -395,7 +395,7 @@ def network_category_tracking_matrix(min_confidence: str = 'high') -> pd.DataFra
             WHERE {_confidence_clause(min_confidence, table_alias='ae')}
               AND ae.advertiser_network IS NOT NULL
               AND ae.category IS NOT NULL
-            GROUP BY ae.profile, ae.advertiser_network, LOWER(TRIM(ae.category))
+            GROUP BY ae.profile, ae.advertiser_network, TRIM(ae.category)
             HAVING n_ads >= 2
             ORDER BY avg_trackers DESC
         """).df()
