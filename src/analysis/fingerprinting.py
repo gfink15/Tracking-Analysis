@@ -394,15 +394,15 @@ def detect_navigator_probers(
 # SUMMARY: how many fingerprinters per profile?
 # ─────────────────────────────────────────────────────────────────────
 def fingerprinter_summary() -> pd.DataFrame:
-    """Per-profile summary of detected fingerprinting activity.
+    """Per-profile summary of detected third-party fingerprinting activity.
 
     Combines results from the three detectors into one row-per-profile
     summary. This is the headline figure for fingerprinting analysis:
-    "profile X encountered N canvas fingerprinters across M visits," etc.
+    "profile X encountered N third-party canvas fingerprinters across M visits," etc.
     """
-    canvas = detect_canvas_fingerprinters()
-    audio = detect_audio_fingerprinters()
-    navigator = detect_navigator_probers()
+    canvas = detect_canvas_fingerprinters(granularity="parent_entity")
+    audio = detect_audio_fingerprinters(granularity="parent_entity")
+    navigator = detect_navigator_probers(granularity="parent_entity")
 
     rows = []
     for profile in PROFILES:
@@ -430,22 +430,26 @@ def fingerprinter_top_scripts(top_n: int = 20) -> pd.DataFrame:
     Useful for the "who's doing this?" question. The same handful
     of scripts (FingerprintJS, Imperva, PerimeterX, etc.) tend to
     dominate. Knowing the top offenders lets you contextualize
-    your findings with the broader literature.
+    your findings within the broader literature.
+
+    Maintained specifically at the script_url (aka domain) level. For
+    statistics about parent entities etc. see fingerprinter_prevalence().
     """
-    canvas = detect_canvas_fingerprinters()
+
+    canvas = detect_canvas_fingerprinters(granularity="parent_entity")
     canvas['technique'] = 'canvas'
-    audio = detect_audio_fingerprinters()
+    audio = detect_audio_fingerprinters(granularity="parent_entity")
     audio['technique'] = 'audio'
-    navigator = detect_navigator_probers()
+    navigator = detect_navigator_probers(granularity="parent_entity")
     navigator['technique'] = 'navigator'
 
     combined = pd.concat([
-        canvas[['profile', 'script_url', 'n_visits', 'technique']],
-        audio[['profile', 'script_url', 'n_visits', 'technique']],
-        navigator[['profile', 'script_url', 'n_visits', 'technique']],
+        canvas[['profile', 'script_url', 'parent_entity', 'n_visits', 'technique']],
+        audio[['profile', 'script_url', 'parent_entity', 'n_visits', 'technique']],
+        navigator[['profile', 'script_url', 'parent_entity', 'n_visits', 'technique']],
     ], ignore_index=True)
 
-    return (combined.groupby(['script_url', 'technique'])
+    return (combined.groupby(['script_url', 'parent_entity', 'technique'])
                     .agg(total_visits=('n_visits', 'sum'),
                          profiles_seen=('profile', 'nunique'))
                     .reset_index()
