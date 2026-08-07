@@ -435,3 +435,80 @@ def plot_cookie_heatmap(
 
     _save_if_requested(fig, save_path)
     return fig
+
+
+def plot_fingerprinter_heatmap(
+    df: pd.DataFrame,
+    top_n: int = 20,
+    title: str = 'Top fingerprinting entities across profiles',
+    save_path: Optional[Path | str] = None,
+) -> Figure:
+    """Heatmap of fingerprinting prevalence (%) across profiles.
+
+    Mirrors plot_tracker_heatmap() but for fingerprinting entities.
+    Enables direct comparison of active fingerprinting behavior against
+    HTTP tracking and cookie-setting prevalence: an entity that dominates
+    the tracker heatmap but is absent here relies on passive network
+    presence rather than active device interrogation. An entity present
+    here but not in the tracker heatmap is a dedicated fingerprinting
+    infrastructure operator.
+
+    Args:
+        df: Long-format DataFrame from fingerprinter_frequency_table(),
+            with columns: profile, parent_entity, n_visits_seen,
+            pct_of_visits, uses_canvas, uses_audio, uses_navigator,
+            n_techniques.
+        top_n: Number of fingerprinting entities to show (by total
+            cross-profile prevalence). Default 20.
+        title: Figure title.
+        save_path: Optional file path (relative paths go in FIGURES_DIR).
+
+    Returns:
+        matplotlib.figure.Figure: The rendered heatmap.
+    """
+    apply_style()
+
+    # Pivot to wide format for the heatmap.
+    pivot = df.pivot(index='parent_entity', columns='profile', values='pct_of_visits')
+
+    # Preserve canonical profile column ordering; fill any profile that
+    # never encountered a top-N entity with 0 rather than NaN.
+    pivot = pivot.reindex(columns=PROFILES).fillna(0)
+
+    # Sort entities by total prevalence so the most common are at top,
+    # then trim to top_n.
+    pivot = pivot.loc[
+        pivot.sum(axis=1).sort_values(ascending=False).index[:top_n]
+    ]
+
+    fig, ax = plt.subplots(figsize=(8, max(6, top_n * 0.3)))
+    im = ax.imshow(pivot.values, aspect='auto', cmap='YlOrRd', vmin=0, vmax=100)
+
+    ax.set_xticks(range(len(pivot.columns)))
+    ax.set_xticklabels([PROFILE_LABELS[p] for p in pivot.columns],
+                       rotation=30, ha='right')
+    ax.set_yticks(range(len(pivot.index)))
+    ax.set_yticklabels(pivot.index, fontsize=9)
+
+    # Cell annotations. Skip if grid is too dense to keep labels legible.
+    if top_n <= 30:
+        for i in range(len(pivot.index)):
+            for j in range(len(pivot.columns)):
+                val = float(cast(Any, pivot.iloc[i, j]))
+
+                # White text on dark cells, black on light. Threshold at 50%.
+                color = 'white' if val > 50 else 'black'
+
+                ax.text(j, i, f'{val:.0f}',
+                        ha='center', va='center',
+                        color=color, fontsize=8)
+
+    plt.colorbar(im, ax=ax, label='% of visits with fingerprinting')
+    ax.set_title(title)
+    ax.grid(False)  # heatmaps shouldn't have grid lines
+
+    plt.tight_layout()
+
+    _save_if_requested(fig, save_path)
+
+    return fig

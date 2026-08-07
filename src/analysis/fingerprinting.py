@@ -249,13 +249,14 @@ def detect_canvas_fingerprinters(
                 profile,
                 script_url,
                 {granularity},
+                visit_id,
                 SUM(n_text_calls)        AS n_text_calls,
                 SUM(n_read_calls)        AS n_read_calls,
                 COUNT(DISTINCT visit_id) AS n_visits
             FROM per_script
             WHERE n_text_calls >= {min_text_calls}
               AND n_read_calls >= 1
-            GROUP BY profile, script_url, {granularity}
+            GROUP BY profile, script_url, {granularity}, visit_id
             ORDER BY n_visits DESC, n_read_calls DESC
         """).df()
     return df
@@ -315,10 +316,11 @@ def detect_audio_fingerprinters(
                 profile,
                 script_url,
                 {granularity},
+                visit_id,
                 COUNT(DISTINCT visit_id) AS n_visits
             FROM per_script
             WHERE n_setup >= 1 AND n_read >= 1
-            GROUP BY profile, script_url, {granularity}
+            GROUP BY profile, script_url, {granularity}, visit_id
             ORDER BY n_visits DESC
         """).df()
     return df
@@ -361,13 +363,14 @@ def detect_navigator_probers(
                 profile,
                 script_url,
                 {granularity},
+                visit_id,
                 COUNT(DISTINCT symbol)            AS n_attributes_read,
                 string_agg(DISTINCT symbol, ', ') AS attributes_list,
                 COUNT(DISTINCT visit_id)          AS n_visits
             FROM javascript_enriched
             WHERE symbol IN {_symbols_in_clause(all_symbols)}
               AND relationship_tier IN ('external third-party', 'inter-family third-party')
-            GROUP BY profile, script_url, {granularity}
+            GROUP BY profile, script_url, {granularity}, visit_id
             HAVING COUNT(DISTINCT symbol) >= {min_attributes}
             ORDER BY n_attributes_read DESC, n_visits DESC
         """).df()
@@ -439,6 +442,126 @@ def fingerprinter_top_scripts(top_n: int = 20) -> pd.DataFrame:
                     .reset_index()
                     .sort_values('total_visits', ascending=False)
                     .head(top_n))
+
+
+def fingerprinter_frequency_table(top_n: int = 20) -> pd.DataFrame:
+    """Frequency of each fingerprinting entity appearing per profile.
+
+    Complementary to fingerprinter_top_scripts(): where that function
+    identifies the most prevalent individual scripts, this function
+    aggregates to the corporate actor level and adds per-profile
+    visit percentages — directly comparable to tracker_frequency_table()
+    in trackers.py, but restricted to heuristic-confirmed fingerprinting
+    behavior rather than all third-party HTTP contacts.
+
+    Deduplication is applied after concatenating detector outputs so that
+    an entity using both canvas and audio fingerprinting on the same visit
+    counts as ONE fingerprinting presence, not two. Technique flags are
+    computed before deduplication so that multi-technique behavior is
+    preserved in the output.
+
+    The same top-N entity set is returned for every profile so that
+    cross-profile comparisons remain apples-to-apples. Output is
+    long-format and directly pivotable into a heatmap with profiles
+    on the x-axis and entities on the y-axis.
+
+    Args:
+        top_n: Number of most prevalent fingerprinting entities to
+            return, ranked by total cross-profile visit count.
+            Default 20.
+
+    Returns:
+        pd.DataFrame with columns: profile, parent_entity,
+        n_visits_seen, pct_of_visits, uses_canvas, uses_audio,
+        uses_navigator, n_techniques.
+    """
+    # --- Step 1: Call detectors and tag technique ---
+    canvas = detect_canvas_fingerprinters(granularity="parent_entity")
+    canvas["technique"] = "canvas"
+
+    audio = detect_audio_fingerprinters(granularity="parent_entity")
+    audio["technique"] = "audio"
+
+    navigator = detect_navigator_probers(granularity="parent_entity")
+    navigator["technique"] = "navigator"
+
+    # --- Step 2: Concatenate all detector output ---
+    combined = pd.concat([
+        canvas[["profile", "visit_id", "parent_entity", "technique"]],
+        audio[["profile",  "visit_id", "parent_entity", "technique"]],
+        navigator[["profile", "visit_id", "parent_entity", "technique"]],
+    ], ignore_index=True)
+
+    # --- Step 3: Compute per-(profile, parent_entity) technique flags
+    #     BEFORE deduplication — dedup collapses the technique column ---
+    technique_flags = (
+        combined.groupby(["profile", "parent_entity"])["technique"]
+        .apply(set)
+        .reset_index()
+        .rename(columns={"technique": "technique_set"})
+    )
+    technique_flags["uses_canvas"]    = technique_flags["technique_set"].apply(
+        lambda s: int("canvas" in s))
+    technique_flags["uses_audio"]     = technique_flags["technique_set"].apply(
+        lambda s: int("audio" in s))
+    technique_flags["uses_navigator"] = technique_flags["technique_set"].apply(
+        lambda s: int("navigator" in s))
+    technique_flags["n_techniques"]   = (
+        technique_flags["uses_canvas"]
+        + technique_flags["uses_audio"]
+        + technique_flags["uses_navigator"]
+    )
+    technique_flags = technique_flags.drop(columns="technique_set")
+
+    # --- Step 4: Deduplicate to (profile, visit_id, parent_entity) ---
+    # One fingerprinting presence per entity per visit regardless of
+    # how many scripts or techniques fired on that visit.
+    deduped = combined.drop_duplicates(
+        subset=["profile", "visit_id", "parent_entity"]
+    )
+
+    # --- Step 5: Count n_visits_seen per (profile, parent_entity) ---
+    visit_counts = (
+        deduped.groupby(["profile", "parent_entity"])
+        .agg(n_visits_seen=("visit_id", "nunique"))
+        .reset_index()
+    )
+
+    # --- Step 6: Identify top-N entities by cross-profile total ---
+    # Same logic as tracker_frequency_table() top_overall CTE —
+    # ensures the same entity set is returned for every profile.
+    top_entities = (
+        visit_counts.groupby("parent_entity")["n_visits_seen"]
+        .sum()
+        .nlargest(top_n)
+        .index
+    )
+    visit_counts = visit_counts[
+        visit_counts["parent_entity"].isin(top_entities)
+    ]
+
+    # --- Step 7: Join profile visit totals for pct_of_visits ---
+    with db_session(read_only=True) as con:
+        profile_totals = con.execute("""
+            SELECT profile, COUNT(DISTINCT visit_id) AS total_visits
+            FROM site_visits
+            GROUP BY profile
+        """).df()
+
+    visit_counts = visit_counts.merge(profile_totals, on="profile", how="left")
+    visit_counts["pct_of_visits"] = (
+        visit_counts["n_visits_seen"] * 100.0
+        / visit_counts["total_visits"].replace(0, pd.NA)
+    ).round(2)
+    visit_counts = visit_counts.drop(columns="total_visits")
+
+    # --- Step 8: Join technique flags and return sorted output ---
+    result = visit_counts.merge(technique_flags, on=["profile", "parent_entity"],
+                                how="left")
+
+    return result.sort_values(
+        ["parent_entity", "profile"]
+    ).reset_index(drop=True)
 
 
 if __name__ == "__main__":
