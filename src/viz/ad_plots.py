@@ -576,7 +576,7 @@ def plot_network_specialization(cat_df: pd.DataFrame,
 
 def plot_category_heatmap(cat_matrix: pd.DataFrame,
                           category_counts: Optional[pd.DataFrame] = None,  # ← NEW
-                          title: str = "VLM Ad Categories — % Share by Profile",
+                          title: str = "Ad Categories — % Share by Profile",
                           figsize: tuple = (8, 9),
                           cmap: str = "YlOrRd",
                           save_path=None) -> Figure:
@@ -627,7 +627,7 @@ def plot_category_heatmap(cat_matrix: pd.DataFrame,
     )
     ax.set_title(title, fontsize=13, pad=12)
     ax.set_xlabel("Profile")
-    ax.set_ylabel("VLM Ad Category")
+    ax.set_ylabel("Ad Category")
     plt.setp(ax.get_xticklabels(), rotation=0)
     plt.setp(ax.get_yticklabels(), rotation=0)
     if annot_matrix is not None:
@@ -748,7 +748,7 @@ def plot_targeting_delta(delta_df: pd.DataFrame,
                 va='center', ha=ha, fontsize=9)
 
     ax.set_xlabel(f"Percentage-point difference ({label_a} − {label_b})")
-    ax.set_ylabel("VLM Ad Category")
+    ax.set_ylabel("Ad Category")
     ax.set_title(
         title or f"Category Targeting Delta\n({label_a} − {label_b}, percentage points)",
         fontsize=13,
