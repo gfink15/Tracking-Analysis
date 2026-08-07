@@ -37,18 +37,18 @@ BATCH_SIZE = 50_000
 # Configuration for tables to be enriched
 # Update corresponding constant ENRICHED_TABLES in config.py
 ENRICHMENT_TARGETS = {
-    # "http_requests": {
-    #     "input_file": "http_requests.parquet",
-    #     "output_file": "http_requests_enriched.parquet",
-    #     "domain_column": "url",
-    #     "context_column": "top_level_url"
-    # },
-    # "javascript_cookies": {
-    #     "input_file": "javascript_cookies.parquet",
-    #     "output_file": "javascript_cookies_enriched.parquet",
-    #     "domain_column": "host",
-    #     "context_column": None
-    # },
+    "http_requests": {
+        "input_file": "http_requests.parquet",
+        "output_file": "http_requests_enriched.parquet",
+        "domain_column": "url",
+        "context_column": "top_level_url"
+    },
+    "javascript_cookies": {
+        "input_file": "javascript_cookies.parquet",
+        "output_file": "javascript_cookies_enriched.parquet",
+        "domain_column": "host",
+        "context_column": None
+    },
     "javascript": {
         "input_file": "javascript.parquet",
         "output_file": "javascript_enriched.parquet",

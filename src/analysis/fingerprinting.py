@@ -372,22 +372,6 @@ def detect_navigator_probers(
             ORDER BY n_attributes_read DESC, n_visits DESC
         """).df()
     return df
-    all_symbols = NAVIGATOR_SYMBOLS + SCREEN_SYMBOLS
-    with db_session(read_only=True) as con:
-        df = con.execute(f"""
-            SELECT
-                profile,
-                script_url,
-                COUNT(DISTINCT symbol)        AS n_attributes_read,
-                string_agg(DISTINCT symbol, ', ') AS attributes_list,
-                COUNT(DISTINCT visit_id)      AS n_visits
-            FROM javascript
-            WHERE symbol IN {_symbols_in_clause(all_symbols)}
-            GROUP BY profile, script_url
-            HAVING COUNT(DISTINCT symbol) >= {min_attributes}
-            ORDER BY n_attributes_read DESC, n_visits DESC
-        """).df()
-    return df
 
 
 # ─────────────────────────────────────────────────────────────────────
