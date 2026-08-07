@@ -113,9 +113,9 @@ def plot_targeting_lift(csv_path: Path, out_path: Optional[Path] = None) -> Figu
             ])
             _, p_val, _, _ = chi2_contingency(table)
             sig_markers[profile] = (
-                "***" if p_val < 0.001 else
-                "**"  if p_val < 0.01  else
-                "*"   if p_val < 0.05  else "ns"
+                "***" if p_val < 0.001 else # type: ignore
+                "**"  if p_val < 0.01  else # type: ignore
+                "*"   if p_val < 0.05  else "ns" # type: ignore
             )
         except (IndexError, ValueError, KeyError):
             sig_markers[profile] = "n/a"
@@ -290,9 +290,9 @@ def plot_seeded_site_impact(csv_path: Path,
 
     # Sample-size labels above bars
     for i, bar in enumerate(ax.patches):
-        h = bar.get_height()
+        h = bar.get_height() # type: ignore
         if not np.isnan(h) and h > 0:
-            ax.text(bar.get_x() + bar.get_width() / 2, h + 0.5,
+            ax.text(bar.get_x() + bar.get_width() / 2, h + 0.5, # type: ignore
                     "", ha="center", fontsize=9)  # placeholder — extend if desired
 
     fig.tight_layout()
@@ -300,6 +300,49 @@ def plot_seeded_site_impact(csv_path: Path,
         fig.savefig(out_path, dpi=200, bbox_inches="tight")
     return fig
 
+def plot_intensity_response(csv_path: Path, out_path: Optional[Path] = None) -> Figure:
+    """
+    Dose-response chart: on-target ad rate as a function of tracker density.
+    One line per profile; x-axis = entity bucket; y-axis = % on-target.
+    """
+    df = pd.read_csv(csv_path)
+    if df.empty:
+        return plt.figure()
+
+    # Preserve bucket ordering
+    bucket_order = ["0 entities", "1 entity", "2-3 entities",
+                    "4-6 entities", "7+ entities"]
+    df["entity_bucket"] = pd.Categorical(
+        df["entity_bucket"], categories=bucket_order, ordered=True
+    )
+
+    fig, ax = plt.subplots(figsize=(12, 7))
+
+    # Control gets a distinct treatment — it's the null hypothesis
+    for profile, sub in df.groupby("profile"):
+        sub = sub.sort_values("entity_bucket")
+        is_control = profile == "control"
+        ax.plot(
+            sub["entity_bucket"].astype(str),
+            sub["pct_on_target"],
+            marker="o", markersize=10, linewidth=2.5,
+            linestyle="--" if is_control else "-",
+            color="gray" if is_control else None,
+            alpha=0.6 if is_control else 1.0,
+            label=f"{profile} (n={sub['n_ads'].sum():,})",
+        )
+
+    ax.set_title("Dose–Response: Tracker Density vs Targeting Accuracy",
+                 fontsize=15, fontweight="bold")
+    ax.set_xlabel("Distinct tracker entities on serving site")
+    ax.set_ylabel("% of ads matching persona interests")
+    ax.legend(title="Persona", loc="best")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+
+    if out_path:
+        fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    return fig
 
 # ---------------------------------------------------------------------------
 # Orchestrator
@@ -318,6 +361,7 @@ def render_all(
         ("targeting_by_platform", "targeting_by_platform.csv", plot_targeting_by_platform),
         ("category_by_platform",  "category_by_platform.csv",  plot_category_by_platform_heatmap),
         ("seeded_site_impact",    "seeded_site_impact.csv",    plot_seeded_site_impact),
+        ("intensity_response", "intensity_response.csv", plot_intensity_response),
     ]
 
     with PdfPages(pdf_path) as pdf:

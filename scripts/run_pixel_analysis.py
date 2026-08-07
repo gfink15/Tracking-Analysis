@@ -91,8 +91,8 @@ from src.analysis.ads_pixels_join import (
 con = duckdb.connect("artifacts/analysis.duckdb")
 TARGET_PIXELS = [
         "Meta Pixel",
-        # "DoubleClick",
-        # "Google Ads Conversion",
+        "DoubleClick",
+        "Google Ads Conversion",
         "Criteo", 
         "TikTok Pixel",
         "Pinterest Tag",
@@ -120,7 +120,7 @@ n_reqs = con.execute("""
         'artifacts/parquet/http_requests_enriched.parquet',
         union_by_name=true
     )
-""").fetchone()[0]
+""").fetchone()[0] # type: ignore
 print(f"1. Total HTTP requests loaded: {n_reqs:,}")
 
 # Step 2: How many pixel classifications occurred (BEFORE any filters)?
@@ -128,7 +128,7 @@ tables = [r[0] for r in con.execute("SHOW TABLES").fetchall()]
 if "pixel_hits_raw" not in tables:
     print("❌ pixel_hits_raw missing — register_pixel_tables didn't run properly")
 else:
-    n_hits = con.execute("SELECT COUNT(*) FROM pixel_hits_raw").fetchone()[0]
+    n_hits = con.execute("SELECT COUNT(*) FROM pixel_hits_raw").fetchone()[0] # type: ignore
     print(f"2. Raw pixel classifications: {n_hits:,}")
 
     if n_hits > 0:
@@ -145,7 +145,7 @@ else:
         # Impact of require_path_confirmed
         n_conf = con.execute("""
             SELECT COUNT(*) FROM pixel_hits_raw WHERE path_confirmed = TRUE
-        """).fetchone()[0]
+        """).fetchone()[0] # type: ignore
         print(f"\n4. Hits with path_confirmed=TRUE: {n_conf:,} "
               f"({100*n_conf/max(n_hits,1):.1f}%)")
 
@@ -154,7 +154,7 @@ else:
             SELECT COUNT(*) FROM pixel_hits_raw
             WHERE top_level_parent_entity IS NOT NULL
               AND request_parent_entity IS NOT NULL
-        """).fetchone()[0]
+        """).fetchone()[0] # type: ignore
         print(f"5. Hits with BOTH parent_entities populated: {n_with_entity:,} "
               f"({100*n_with_entity/max(n_hits,1):.1f}%)")
 
@@ -163,7 +163,7 @@ else:
             WHERE top_level_parent_entity IS NOT NULL
               AND request_parent_entity IS NOT NULL
               AND top_level_parent_entity != request_parent_entity
-        """).fetchone()[0]
+        """).fetchone()[0] # type: ignore
         print(f"6. Hits that are cross-entity (3P): {n_cross:,} "
               f"({100*n_cross/max(n_hits,1):.1f}%)")
 
@@ -174,7 +174,7 @@ else:
             n_nontech = con.execute("""
                 SELECT COUNT(*) FROM pixel_hits_raw
                 WHERE COALESCE(is_technical_3p, 0) < 0.5
-            """).fetchone()[0]
+            """).fetchone()[0] # type: ignore
             print(f"7. Non-technical 3P hits: {n_nontech:,} "
                   f"({100*n_nontech/max(n_hits,1):.1f}%)")
 
@@ -236,6 +236,21 @@ print(con.execute("""
     FROM site_pixels
     ORDER BY n_pixel_hits DESC
     LIMIT 10
+""").df().to_string(index=False))
+# Are non-technical requests concentrated in NON-pixel domains?
+print(con.execute("""
+    WITH sample AS (
+        SELECT domain, parent_entity, is_technical_3p, COUNT(*) AS n_reqs
+        FROM read_parquet(
+            'artifacts/parquet/http_requests_enriched.parquet',
+            union_by_name=true
+        )
+        WHERE is_technical_3p < 0.5
+        GROUP BY domain, parent_entity, is_technical_3p
+        ORDER BY n_reqs DESC
+        LIMIT 20
+    )
+    SELECT * FROM sample
 """).df().to_string(index=False))
 # FIX #4: categorical confidence (adjust if create_ads_with_pixel_context expects float)
 create_ads_with_pixel_context(con)

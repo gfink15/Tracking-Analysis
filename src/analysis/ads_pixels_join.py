@@ -459,37 +459,30 @@ def seeded_site_impact(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # NEW: Pixel intensity (dose-response) analysis
 # ---------------------------------------------------------------------------
-def get_pixel_intensity_stats(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
+# src/analysis/ads_pixels_join.py
+
+def get_intensity_stats(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
     """
-    Buckets sites by the number of distinct advertising pixels they carry,
-    then measures on-target rate per bucket per profile.
-
-    Tests the hypothesis: more trackers → higher targeting accuracy
-    (a dose-response relationship). This is a stronger causal claim than
-    the binary pixel/no-pixel comparison and strengthens the paper's
-    contribution.
-
-    Returns columns:
-        profile, intensity_bucket, pct_on_target, n_ads
+    Buckets sites by tracker density to show a dose-response curve.
     """
     return con.execute("""
         SELECT
             profile,
             CASE
-                WHEN site_distinct_pixels = 0 THEN '0 (None)'
-                WHEN site_distinct_pixels = 1 THEN '1 (Single)'
-                WHEN site_distinct_pixels BETWEEN 2 AND 3 THEN '2-3 (Moderate)'
-                ELSE '4+ (High)'
+                WHEN site_tracker_entities <= 1 THEN '1 (Low)'
+                WHEN site_tracker_entities BETWEEN 2 AND 5 THEN '2-5 (Med)'
+                WHEN site_tracker_entities BETWEEN 6 AND 10 THEN '6-10 (High)'
+                ELSE '11+ (Extreme)'
             END AS intensity_bucket,
             100.0 * AVG(CASE WHEN is_on_target THEN 1.0 ELSE 0.0 END) AS pct_on_target,
             COUNT(*) AS n_ads
         FROM ads_scored
         GROUP BY profile, intensity_bucket
-        ORDER BY profile,
-            CASE intensity_bucket
-                WHEN '0 (None)'         THEN 0
-                WHEN '1 (Single)'       THEN 1
-                WHEN '2-3 (Moderate)'   THEN 2
-                ELSE 3
+        ORDER BY profile, 
+            CASE intensity_bucket 
+                WHEN '1 (Low)' THEN 1 
+                WHEN '2-5 (Med)' THEN 2 
+                WHEN '6-10 (High)' THEN 3 
+                ELSE 4 
             END
     """).df()

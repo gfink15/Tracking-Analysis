@@ -277,42 +277,32 @@ def extract_pixels_from_sqlite(
 # ---------------------------------------------------------------------------
 # Site-level aggregation
 # ---------------------------------------------------------------------------
+# src/analysis/pixels.py
+
 def aggregate_pixels_by_site(
     pixel_hits: pd.DataFrame,
-    group_cols: Iterable[str] = ("top_level_parent_entity",),  # CHANGED default
+    group_cols: Iterable[str] = ("top_level_parent_entity",),
     target_pixels: Optional[list[str]] = None,
     require_path_confirmed: bool = False,
-    # NEW: entity-relationship filters
     only_third_party: bool = False,
     exclude_technical_3p: bool = False,
     relationship_tiers: Optional[list[str]] = None,
 ) -> pd.DataFrame:
     """
     Collapse pixel hits to one row per site (grouped by parent_entity).
-
-    New parameters
-    --------------
-    only_third_party : bool, default False
-        Keep only hits where the pixel's parent_entity differs from the
-        site's parent_entity — i.e., true cross-entity tracking.
-    exclude_technical_3p : bool, default False
-        Drop requests flagged as technical third-parties (CDNs, hosting,
-        etc.) since they aren't advertising infrastructure.
-    relationship_tiers : list[str], optional
-        Restrict to specific relationship tiers, e.g. ["tracker", "advertiser"].
     """
     if pixel_hits.empty:
         return pd.DataFrame()
 
     hits = pixel_hits.copy()
 
+    # --- Filters ---
     if target_pixels:
         hits = hits[hits["pixel_type"].isin(target_pixels)]
 
     if require_path_confirmed and "path_confirmed" in hits.columns:
         hits = hits[hits["path_confirmed"] == True]
 
-    # NEW: entity-relationship filters
     if only_third_party and {"top_level_parent_entity", "request_parent_entity"}.issubset(hits.columns):
         hits = hits[
             hits["top_level_parent_entity"].notna()
@@ -330,34 +320,44 @@ def aggregate_pixels_by_site(
         logger.warning("No pixel hits after filtering.")
         return pd.DataFrame(columns=list(group_cols) + [
             "has_pixel", "n_pixel_hits", "n_distinct_pixel_types",
-            "pixel_types", "distinct_tracker_entities",
+            "distinct_tracker_entities", "pixel_types",
             "has_meta", "has_tiktok", "has_doubleclick",
             "has_google_ads", "has_criteo",
         ])
 
+    # --- Aggregation ---
     group_cols = list(group_cols)
     grouped = hits.groupby(group_cols)
 
-    # NEW: also count distinct tracker parent entities per site — this is
-    # a much more meaningful "tracker density" metric than raw hit count.
     agg_kwargs = {
         "n_pixel_hits":            ("pixel_type", "size"),
         "n_distinct_pixel_types":  ("pixel_type", "nunique"),
         "pixel_types":             ("pixel_type", lambda s: ", ".join(sorted(set(s)))),
     }
+
+    # CRITICAL: this is the column the SQL view is looking for
     if "request_parent_entity" in hits.columns:
         agg_kwargs["distinct_tracker_entities"] = ("request_parent_entity", "nunique")
 
     agg = grouped.agg(**agg_kwargs).reset_index()
     agg["has_pixel"] = True
 
-    # Per-platform flags from the UNFILTERED hits (same design as before)
+    # Fallback: if request_parent_entity wasn't available, backfill with a zero column
+    # so the SQL COALESCE(sp.distinct_tracker_entities, 0) never crashes
+    if "distinct_tracker_entities" not in agg.columns:
+        agg["distinct_tracker_entities"] = 0
+        logger.warning(
+            "request_parent_entity missing from pixel_hits; "
+            "distinct_tracker_entities defaulted to 0."
+        )
+
+    # Per-platform flags from the UNFILTERED hits
     for flag_name, pixel_name in [
-        ("has_meta", "Meta Pixel"),
-        ("has_tiktok", "TikTok Pixel"),
+        ("has_meta",        "Meta Pixel"),
+        ("has_tiktok",      "TikTok Pixel"),
         ("has_doubleclick", "DoubleClick"),
-        ("has_google_ads", "Google Ads Conversion"),
-        ("has_criteo", "Criteo"),
+        ("has_google_ads",  "Google Ads Conversion"),
+        ("has_criteo",      "Criteo"),
     ]:
         flags = (
             pixel_hits[pixel_hits["pixel_type"] == pixel_name]
@@ -367,7 +367,6 @@ def aggregate_pixels_by_site(
         agg[flag_name] = agg[flag_name].fillna(0).astype(int).gt(0)
 
     return agg
-
 # ---------------------------------------------------------------------------
 # Convenience: build the full site-pixel table for a crawl
 # ---------------------------------------------------------------------------
@@ -382,7 +381,7 @@ def build_site_pixel_table(
     hits = extract_pixels_from_parquet(http_requests_df)
     if hits.empty:
         logger.warning("No pixel hits found for crawl %s", crawl_name)
-        return pd.DataFrame(columns=["crawl_name", "top_level_etld1", "has_pixel"])
-    site_table = aggregate_pixels_by_site(hits, group_cols=["top_level_etld1"])
+        return pd.DataFrame(columns=["crawl_name", "top_level_parent_entity", "has_pixel"])
+    site_table = aggregate_pixels_by_site(hits, group_cols=["top_level_parent_entity"])
     site_table.insert(0, "crawl_name", crawl_name)
     return site_table
